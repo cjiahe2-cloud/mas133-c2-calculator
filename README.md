@@ -26,9 +26,17 @@ It comes in two forms: a chat in the terminal and a web app.
    `text-embedding-3-large` and saved to a local [Chroma](https://www.trychroma.com/)
    database in `chroma_db/`.
 2. **Ask:** an agent (`gpt-4.1` via LangChain) decides what to search for
-   (optionally just one notice), retrieves the 6 closest chunks, follows
+   (optionally just one notice), retrieves the 10 closest chunks, follows
    cross-references with further searches, and writes an answer with citations.
    It remembers the conversation, so follow-up questions work.
+3. **Calculate:** for MAS 133's foreign currency mismatch risk requirement and
+   adjustment for asset concentration, the agent calls a Python calculator
+   (`calculator.py`) instead of doing the arithmetic itself. The calculator
+   shows every step with its paragraph and returns the notice text behind each
+   step. How the FX part of the adjustment is worked out is set by
+   `FX_ADJUSTMENT_METHOD` in `calculator.py` (default: total asset value less
+   the 40% limit, e.g. 100m − 40m = 60m). This is an interpretation of the
+   notice: have an actuary confirm it.
 
 ## Setup
 
@@ -82,12 +90,14 @@ Conversations are kept in memory only and are lost when you close the app.
 ## Checking quality
 
 Two scripts write a Word report for you to read through. Both call the OpenAI
-API, so each run costs a little.
+API, so each run costs a little. `calc_test.py` is free: it checks the
+calculator against hand-worked figures.
 
 | Script | What it checks | Output |
 | --- | --- | --- |
 | `uv run python test_search.py` | Does search find the right passages? | `search_results.docx` |
-| `uv run python answer_test.py` | Are the answers right, and are off-topic questions refused? | `answers.docx` |
+| `uv run python answer_test.py` | Are the answers right, are off-topic questions refused, and do multi-turn calculation chats hold up? (`--scenarios-only` for just the chats) | `answers.docx` |
+| `uv run python calc_test.py` | Does the calculator give the hand-worked figures? | printed |
 
 The test questions include table lookups from MAS 133's appendices. PDF tables
 don't always come out as clean text, so check those answers closely.
@@ -98,11 +108,13 @@ If a script prints "Could not save", close the `.docx` file in Word and run it a
 
 ```
 src/insurance_mas_rag/__init__.py   shared settings, prompt and agent (change models here)
+src/insurance_mas_rag/calculator.py FX mismatch requirement and asset concentration calculator
 ingest.py                           PDFs -> chroma_db/ (with paragraph tagging)
 chat.py                             terminal chat
 app.py                              web app (Streamlit)
 test_search.py                      retrieval report
 answer_test.py                      answer report
+calc_test.py                        calculator check (no API calls)
 .env.example                        template for .env
 .streamlit/config.toml              web app theme
 ```

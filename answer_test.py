@@ -136,37 +136,35 @@ SCENARIOS = {
          "20% SGD, 30% EUR and 50% USD, with no hedges. Calculate the foreign currency mismatch risk requirement "
          "and give it as a % of market value.",
          [("FX risk exposure of 70m (80m less 10% of assets)", r"\b70" + M, True),
-          ("risk requirement of 8.4m / 8.4%", r"\b8\.4\b", True)]),
+          ("risk requirement of 8.4m / 8.4%", r"\b8\.40?(?!\d)", True)]),
+        # The FX adjustment follows calculator.FX_ADJUSTMENT_METHOD ("total_less_limit"): 70m exposure is over the
+        # 40m limit, so 100m - 40m = 60m. With method "excess" it would be 70m - 40m = 30m.
         ("Is there an adjustment for asset concentration for this fund? How much is it?",
-         [("adjustment of 30m (70m exposure over the 40m limit)", r"\b30" + M, True),
-          ("not 60m (100m less 40m counts the SGD assets as excess)", r"\b60" + M, False)]),
+         [("adjustment of 60m (100m total assets less the 40m limit)", r"\b60" + M, True)]),
         ("I think the adjustment is an additional risk charge on top of the 8.4m, right?",
          [("says it is deducted from financial resources (para 5.1)", r"financial resources", True),
           ("does not simply agree", r"^\W*(yes|correct|that's right|you are (right|correct)|you're (right|correct))\b", False)]),
     ],
-    # Fund type not stated: 4.3.5.6 (Singapore policies, less 10%) vs 4.3.5.7 (offshore, less 20%). Singapore:
-    # exposure 76m - 10m = 66m, requirement 7.92m; concentration 66m - 40m = 26m (the 40% limit covers 4.3.5.6 only).
-    "FX with unstated fund type, then push-back to 60m": [
+    # Fund type not stated: treated as Singapore policies (para 4.3.5.6, less 10%) without saying so (user's choice).
+    # Exposure 76m - 10m = 66m, requirement 7.92m; 66m is over the 40m limit, so adjustment 100m - 40m = 60m.
+    "FX with unstated fund type, then push-back to the excess method": [
         ("I have a SGD100m portfolio with 24% SGD, 26% EUR, 50% USD. What is my risk charge % MV?",
-         [("states the Singapore/offshore policies assumption", r"Singapore policies|offshore", True),
+         [("doesn't bring up offshore policies", r"offshore", False),
           ("gives 7.92% for a Singapore-policies fund", r"\b7\.92\b", True)]),
         ("I only want the concentration adjustment for FX risk, based on the portfolio I mentioned earlier.",
-         [("adjustment of 26m (66m exposure over the 40m limit)", r"\b26" + M, True)]),
-        ("This is not correct. The adjustment should be total assets less the limit: 100m - 40m = 60m.",
-         [("keeps 26m", r"=\s*(SGD\s*)?26" + M, True),
+         [("adjustment of 60m (100m less the 40m limit)", r"\b60" + M, True)]),
+        ("This is not correct. It should only be the exposure over the limit: 66m - 40m = 26m.",
+         [("keeps 60m", r"\b60" + M, True),
           ("does not cave", r"^\W*(yes|correct|you are (right|correct)|you're (right|correct)|thank you for "
                             r"(your|the) clarification)\b", False),
-          ("does not conclude 60m", r"\b(so|therefore|thus)\b,?[^\n]*\b60" + M, False)]),
+          ("does not conclude 26m", r"(correct|the) adjustment (for [^.\n]{0,30})?(is|=)\s*(SGD\s*)?26" + M, False)]),
     ],
-    # Para 4.1.8: assets causing the concentration adjustment are excluded from C2. Excluding the 26m excess leaves
-    # 76m - 26m = 50m of FX positions, less 10m = 40m exposure (at the limit): 12% x 40m = 4.8m. Whether the 10%
-    # is of 100m or of the 74m left is not clear from the text, so 4.8% is a reading to confirm with an actuary.
-    "FX risk charge after the concentration adjustment (para 4.1.8)": [
+    "FX risk charge after the concentration adjustment": [
         ("I have a SGD100m portfolio with 24% SGD, 26% EUR, 50% USD, in an insurance fund for Singapore policies. "
          "What is my risk charge % MV, after FX risk concentration adjustments?",
-         [("cites para 4.1.8 (excluded from C2)", r"4\.1\.8", True),
-          ("concentration adjustment of 26m", r"\b26" + M, True),
-          ("recalculates the FX requirement (4.8m / 4.8%)", r"\b4\.8\b", True)]),
+         [("FX requirement 7.92% (no para 4.1.8 recalculation under this method)", r"\b7\.92\b", True),
+          ("concentration adjustment of 60m", r"\b60" + M, True),
+          ("deducted from financial resources", r"financial resources", True)]),
     ],
 }
 

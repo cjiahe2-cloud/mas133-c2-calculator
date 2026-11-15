@@ -5,7 +5,7 @@ import uuid
 
 import streamlit as st
 
-from insurance_mas_rag import CHAT_MODEL, PROJECT_DIR, Context, build_agent, latest_turn, load_env
+from insurance_mas_rag import CALC_HEADER, CALC_PASSAGES, CHAT_MODEL, PROJECT_DIR, Context, build_agent, latest_turn, load_env
 
 FROG = str(PROJECT_DIR / "assets" / "pink_frog.png")
 USER_ICON = ":material/person:"
@@ -155,6 +155,10 @@ def render_answer(reply: str, searches: list[str], passages: list[str]) -> None:
         chips = "".join(f'<span class="chip">{html.escape(chip_text(c))}</span>' for c in cited)
         st.markdown(f'<div class="chips"><span class="chips-label">Sources</span>{chips}</div>',
                     unsafe_allow_html=True)
+
+    for calc in (p for p in passages if p.startswith(CALC_HEADER)):
+        with st.expander("🧮 Calculation steps (MAS 133 calculator)"):
+            st.code(calc.split("\n", 1)[1].split(CALC_PASSAGES)[0].strip(), language=None, wrap_lines=True)
 
     if sources:
         with st.expander(f"🔎 {len(sources)} passages searched"):

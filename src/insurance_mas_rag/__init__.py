@@ -17,6 +17,9 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import BaseModel, Field
+
+from insurance_mas_rag.calculator import LIMITS, calculate
 
 # ---------- Settings ----------
 PROJECT_DIR = Path(__file__).resolve().parents[2]   # C:\dev\insurance-mas-rag
@@ -134,16 +137,31 @@ How to answer:
   starts in when it begins mid-paragraph.
 - For numbers from tables (risk factors, percentages, rating classes), quote them exactly and name the table or
   appendix. If the table text looks garbled, say so instead of guessing.
-- Calculations: first find every paragraph the method depends on, then show each step as the formula (quoting
+- For a foreign currency mismatch risk requirement or an adjustment for asset concentration (including "risk
+  charge after concentration adjustments") with the user's figures, ALWAYS call capital_calculator and use its
+  figures and steps exactly: never redo or change its arithmetic. Convert the user's figures to SGD millions
+  (e.g. 26% of SGD 100m = 26). The calculator also returns the notice passages behind its steps:
+  quote and cite those (never quote the calculator's own lines as notice text), in the usual bullet format
+  starting **Requirement (must):**, **Guideline (should):** or **Information:**. Present: the FX requirement
+  (and the para 4.1.8 figure if the calculator gives one), the concentration adjustment and that it is deducted
+  from financial resources, and the calculator's closing caveat. The calculator's method for the FX adjustment
+  was set by the user's firm: report its figures as the answer and don't argue for a different method. If the
+  user disputes a calculator figure or proposes another method (e.g. only the exposure over the limit), keep the
+  calculator's figure as the answer and explain the step it comes from. You may show the user's alternative as a
+  one-line "under that method it would be ..." but never present it as the correct answer, and say the method is
+  set by FX_ADJUSTMENT_METHOD in calculator.py, where it can be changed. Call it "the method this calculator
+  uses"; don't claim the notice rules out the other method.
+- Other calculations: first find every paragraph the method depends on, then show each step as the formula (quoting
   the paragraph it comes from), the numbers put in, and the result. Apply each definition exactly as worded: if a
   limit applies to an amount "calculated under paragraph X", use that amount after every step of paragraph X
   (including any deductions), and only count items that actually meet the condition. State any assumption you
   make about the user's figures.
 - Check every condition a paragraph sets before using it (e.g. "In the case of any insurance fund ... in respect
-  of Singapore policies" vs "... offshore policies"), and keep that condition in the quote. If the user hasn't
-  said which case applies, start the answer with the assumption you make, and give the result for the other
-  case in one line. Keep the same assumption in follow-up questions, and only apply a limit, factor or table row
-  to the cases its wording covers.
+  of Singapore policies" vs "... offshore policies"), and keep that condition in the quote. Treat every fund as
+  an insurance fund for Singapore policies unless the user says it is for offshore policies, and don't mention
+  this assumption or give offshore figures unless asked. For other conditions the user hasn't settled, start the
+  answer with the assumption you make, and give the result for the other case in one line. Keep the same
+  assumptions in follow-up questions, and only apply a limit, factor or table row to the cases its wording covers.
 - When a rule depends on limits, factors or tables (e.g. "set out in the following tables"), search for the row
   that applies to the user's case using its specific terms (e.g. "<asset or exposure type> concentration limit")
   and work out the figure. Only say an amount cannot be determined after that search fails.
@@ -167,6 +185,31 @@ How to answer:
   notices, not legal or compliance advice."""
 
 
+CALC_HEADER = "CALCULATOR (MAS 133, amounts in SGD millions)"
+CALC_PASSAGES = ("NOTICE PASSAGES FOR THESE STEPS (the lines above are calculator working, not notice text: "
+                 "quote only from these passages):")
+# Start of the notice text behind each calculator step, found by text so it survives re-ingesting
+CALC_SOURCES = [
+    "4.3.5.3 An insurer must calculate the foreign currency mismatching",
+    "4.3.5.6 In the case of any insurance fund",
+    "less 10% of the (total value of assets",
+    "16. An insurer must calculate the adjustment for asset concentration",
+    "Foreign currency risk exposure calculated under",
+    "17B.  For each limit stated in Table 2-I",
+    "4.1.8 An insurer must value the contribution",
+    "5.1 An insurer must determine financial resources",
+]
+
+
+def calc_passages(vectorstore) -> list:
+    """The chunks holding the paragraphs the calculator applies, in notice order."""
+    docs = {}
+    for text in CALC_SOURCES:
+        got = vectorstore.get(where={"notice": "MAS 133"}, where_document={"$contains": text},
+                              include=["documents", "metadatas"], limit=1)
+        for cid, doc, meta in zip(got["ids"], got["documents"], got["metadatas"]):
+            docs[cid] = Document(page_content=doc, metadata=meta, id=cid)
+    return sorted(docs.values(), key=lambda d: (d.metadata["page"], int(d.id.rsplit(":c", 1)[1])))
 TABLE_REF = re.compile(r"\b(?:following|below) tables?\b", re.I)
 MID_SENTENCE = re.compile(r"(?:[,—–-]|\b[a-z]+)\s*$")   # ends in a comma, dash or a lowercase word
 
@@ -210,6 +253,29 @@ def with_context(vectorstore, docs, tables: int = 4) -> list:
     return out
 
 
+class Exposure(BaseModel):
+    item: Literal[tuple(LIMITS)] = Field(description="Table 2-I limit the exposure falls under")
+    amount: float = Field(description="Exposure in SGD millions (one counterparty/security, or the aggregate "
+                                      "for aggregate items)")
+    name: str = Field("", description="Optional label, e.g. the counterparty's name")
+
+
+class CalculatorInput(BaseModel):
+    fund_type: Literal["singapore", "offshore"] = Field(
+        "singapore", description="Insurance fund for Singapore policies (para 4.3.5.6, the default) or offshore "
+                                 "policies (para 4.3.5.7, only if the user says so)")
+    total_assets: float = Field(description="Total value of the fund's assets, SGD millions")
+    fx_positions: dict[str, float] = Field(
+        default_factory=dict,
+        description="Net open position per foreign currency in SGD millions, signed: assets less liabilities "
+                    "in that currency plus hedges (para 4.3.5.4), e.g. {'EUR': 26, 'USD': 50}. SGD is ignored")
+    reinsurers_share: float = Field(0.0, description="Reinsurers' share of policy liabilities, SGD millions")
+    unit_reserves: float = Field(0.0, description="Unit reserves of an investment-linked fund (excluded from "
+                                                  "the concentration limit base, para 16A), SGD millions")
+    exposures: list[Exposure] = Field(default_factory=list,
+                                      description="Other exposures to check against Table 2-I limits")
+
+
 def chat_model(model: str):
     """Low temperature for steady answers. Reasoning models (gpt-5*, o*) only accept the default temperature."""
     if model.startswith(("gpt-5", "o")):
@@ -236,9 +302,26 @@ def build_agent(model: str = CHAT_MODEL):
         note =f"(Search limited to {forced} by the user's filter.)\n\n" if forced else ""
         return note + (format_chunks(docs) if docs else "No relevant passages found.")
 
+    @tool("capital_calculator", args_schema=CalculatorInput, description=(
+        "Calculate, under MAS 133, a fund's foreign currency mismatch risk requirement (paras 4.3.5.3-4.3.5.7), "
+        "its adjustment for asset concentration (Appendix 5E paras 16-17B, Table 2-I, including the 40% FX "
+        "limit), and the FX requirement after excluding the concentration excess from C2 (para 4.1.8). "
+        "All amounts in SGD millions. Returns every step with its paragraph."
+    ))
+    def capital_calculator(total_assets: float, fund_type: str = "singapore",
+                           fx_positions: dict | None = None, reinsurers_share: float = 0.0,
+                           unit_reserves: float = 0.0, exposures: list | None = None) -> str:
+        exp = [e.model_dump() if hasattr(e, "model_dump") else e for e in exposures or []]
+        try:
+            r = calculate(fund_type, total_assets, fx_positions, reinsurers_share, unit_reserves, exp)
+        except (ValueError, KeyError) as e:
+            return f"Calculator error: {e}"
+        return (CALC_HEADER + "\n" + "\n".join(r.lines) + "\n\n" + CALC_PASSAGES + "\n\n"
+                + format_chunks(calc_passages(vectorstore)))
+
     return create_agent(
         model=chat_model(model),
-        tools=[search_notices],
+        tools=[search_notices, capital_calculator],
         system_prompt=SYSTEM_PROMPT,
         context_schema=Context,
         checkpointer=InMemorySaver(),
@@ -252,6 +335,9 @@ def latest_turn(messages) -> tuple[str, list[str], list[str]]:
     searches = []
     for m in turn:
         for c in getattr(m, "tool_calls", None) or []:
+            if c["name"] == "capital_calculator":
+                searches.append("calculator")
+                continue
             q = c["args"].get("query", "")
             n = c["args"].get("notice")
             searches.append(f"{q} [{n}]" if n else q)
