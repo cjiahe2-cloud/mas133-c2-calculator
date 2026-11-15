@@ -1,0 +1,13 @@
+# Nordic Glacier, soft grey (less glare)
+[theme]
+base = "light"
+backgroundColor = "#E2E8F0"            # soft slate grey: main page
+secondaryBackgroundColor = "#F1F5F9"   # lighter: chat box, expanders (look like cards)
+primaryColor = "#1E3A8A"               # deep winter navy: buttons, highlights
+borderColor = "#64748B"                # cool slate: borders
+textColor = "#0F172A"                  # dark ink
+
+[theme.sidebar]
+backgroundColor = "#CBD5E1"            # darker slate
+secondaryBackgroundColor = "#E2E8F0"   # "New conversation" button
+textColor = "#0F172A"

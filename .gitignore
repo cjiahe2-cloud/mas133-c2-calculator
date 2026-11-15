@@ -1,0 +1,17 @@
+# Secrets (.env.example is the committed template)
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local vector database
+chroma_db/
+
+# IDE
+.idea/
+.vscode/
+
+# Generated Word output (and lock files)
+*.docx

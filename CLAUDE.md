@@ -1,0 +1,43 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A RAG chatbot for two MAS (Monetary Authority of Singapore) insurance notices: MAS 125 (Investments of Insurers) and MAS 133 (Valuation and Capital Framework for Insurers). The PDFs in `s3-rag-mas/` are embedded into a local Chroma vector store, and a LangChain agent answers questions using only the passages it retrieves, citing notice, page and paragraph. It was adapted from the sibling project `C:\dev\rag-tutor` (a CFA textbook tutor) and keeps the same architecture. There is no web search: the only source is the local PDFs.
+
+## Commands
+
+Uses `uv` with Python 3.14. `OPENAI_API_KEY` must be in `.env` (template: `.env.example`). Scripts call `load_env()`, which stops with a clear message if the key is missing or still the placeholder.
+
+```
+uv sync                                     # install dependencies
+uv run python ingest.py --dry-run           # chunks + citation labels, no OpenAI calls (use this to check parsing)
+uv run python ingest.py                     # embed new PDFs into chroma_db/ (skips notices already there)
+uv run python ingest.py --rebuild "MAS 133" # re-embed one notice; bare --rebuild re-embeds all
+uv run python chat.py                       # terminal chat
+uv run streamlit run app.py                 # web chat
+uv run python test_search.py                # retrieval check -> search_results.docx
+uv run python answer_test.py                # answer check    -> answers.docx
+```
+
+There is no test framework, linter, or CI. `test_search.py` and `answer_test.py` are manual evaluation scripts that call the OpenAI API (they cost money) and write Word reports for a person to review.
+
+## Architecture
+
+Everything shared lives in the `insurance_mas_rag` package (`src/insurance_mas_rag/__init__.py`): paths, settings (`COLLECTION = "mas_notices"`, `EMBED_MODEL`, `CHAT_MODEL = "gpt-4.1-mini"`, `K = 6`), `load_env()`, `notice_name()` / `notice_version()`, `open_vectorstore()`, `citation()`, `format_chunks()`, `SYSTEM_PROMPT`, `build_agent()` and `latest_turn()`.
+
+- **Filenames carry identity**: `<name>_<revision date>.pdf`. `notice_name()` turns the stem into `MAS 125` / `MAS 133`, and `notice_version()` takes the date after `_`.
+- **Ingestion (`ingest.py`)**: per page, `page_text()` extracts text and restores Calibri glyphs that MAS 133's broken font maps turn into spaces (`GLYPH_FIX`, keyed by font + glyph id: `N`, ligatures `ti`/`fi`/`fl`/`ff`, etc.; pp.127, 136-165, 193-223). On those pages it also inserts a space at visible gaps between words. `check_spaces()` prints a WARNING (in `--dry-run` and real runs) for any other glyph that extracts as a space but isn't the font's space width, which is how a new broken font in a revised PDF shows up: identify the glyph from the surrounding words and add it to `GLYPH_FIX`. Then `clean_page()` removes the running header and page number and joins lone labels (`17.`, `(a)`) to the next line. `ParaTracker` finds paragraph numbers at line starts. It rejects table values (any `0` component), cross-references (text after the number not capitalised), list items inside multi-level numbering, and numbers that are not the current or next top-level number. It resets at each `Appendix X` page title. MAS 133's numbered `Guidelines:` boxes have their own sequence (4.4, 4.5… between paras 4.2.10 and 4.2.11; `1.`, `2.` in appendices) and are stored with a `G` prefix (`G4.4`, cited as "Guideline 4.4"). A box ends at the next paragraph number, definition line, or sub-item whose first sentence says "must"; in Appendix 3D, whose `(1)` paragraphs aren't tracked, the label falls back to the appendix alone. `segments()` gives each definition (`“term” means…`) its own piece on pages with 3+ definitions; then pieces are split with `RecursiveCharacterTextSplitter(1200, 200, add_start_index=True)`. Each chunk gets metadata `doc` (stem), `notice`, `version`, `page` (**0-based**), `appendix`, `para_start` (the paragraph in effect where the chunk starts, carried across pages) and `para_end`. Chroma needs scalar values, so missing values are `""`. IDs are `<doc>:p<page>:c<n>` (upsert).
+- **Revisions**: a notice already stored under the same `doc` is skipped. If the same `notice` exists under an older `doc`, ingest warns and asks for `--rebuild`. `--rebuild` deletes by `notice`, so the old revision is removed.
+- **Retrieval contract**: every consumer opens the same `chroma_db/` + `mas_notices` collection with the same embedding model. Changing `EMBED_MODEL` means deleting `chroma_db/` and re-ingesting.
+- **Citations**: `citation()` builds `MAS 133 p.31, paras 4.2.13-4.2.16`, `MAS 133 p.30, para 4.2.8 to Guideline 4.5` or `MAS 133 p.129, Appendix 4A`. Pages are 1-based for users.
+- **Agent**: one tool, `search_notices(query, notice=None)`, where `notice` filters on metadata. It uses an `InMemorySaver` checkpointer (memory per `thread_id`, lost on restart) and a `Context` dataclass. The prompt requires citations, exact quotes of "must" wording, the must/should (requirement vs guideline) distinction, and searching again to follow cross-references.
+- **`app.py`**: `build_agent` is wrapped in `st.cache_resource`. Each session gets a uuid `thread_id`. `$` is escaped for Streamlit's LaTeX rendering. A missing key shows `st.error` instead of crashing.
+- **Answer format**: every rule-bearing point is typed **Requirement (must)** / **Guideline (should)** / **Information** and carries a word-for-word quote with its label, so must/should can't be lost in paraphrase. `SYSTEM_PROMPT` and `answer_test.py` state the same rules; keep them in sync.
+- **`answer_test.py`** skips the agent and calls the model once with `with_structured_output(Answer)`, where each point has `type`, `quote`, `source`, `explanation`. `check()` flags quotes not found word for word in the retrieved passages (ignoring line breaks, curly quotes and footnote digits; `...` or a line break in a quote marks skipped text) and types that don't match the quote's wording (`BINDING`). Its `covered=false` should come back for off-topic and out-of-corpus questions (e.g. MAS Notice 126).
+
+## Repo notes
+
+- Git-ignored: `.env`, `chroma_db/`, `*.docx`, `.venv/`. The MAS PDFs in `s3-rag-mas/` are public regulatory documents and are not ignored.
+- When MAS revises a notice, also update the version dates in `SYSTEM_PROMPT`, the `app.py` caption and `README.md`.
