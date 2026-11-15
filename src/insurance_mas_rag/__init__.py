@@ -12,7 +12,8 @@ from typing import Literal
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
-from langchain.tools import tool
+from langchain.tools import ToolRuntime, tool
+from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langgraph.checkpoint.memory import InMemorySaver
@@ -23,8 +24,8 @@ PDF_DIR = PROJECT_DIR / "s3-rag-mas"
 DB_DIR = PROJECT_DIR / "chroma_db"
 COLLECTION = "mas_notices"
 EMBED_MODEL = "text-embedding-3-large"   # changing this means re-ingesting
-CHAT_MODEL = "gpt-4.1-mini"
-K = 6                                    # passages retrieved per search
+CHAT_MODEL = "gpt-4.1"   # gpt-4.1-mini caved to push-back on calculations (answer_test.py scenarios)
+K = 10                                   # passages retrieved per search
 
 NOTICES = ("MAS 125", "MAS 133")
 
@@ -99,6 +100,7 @@ def format_chunks(docs) -> str:
 @dataclass
 class Context:
     user_id: str
+    notice: str | None = None   # set by the app's "Search in" filter: search only this notice
 
 
 SYSTEM_PROMPT = """You answer questions about two Monetary Authority of Singapore (MAS) notices for insurers:
@@ -121,21 +123,103 @@ How to answer:
   reorder words inside the quote (use "..." to skip parts). The type follows the passage: binding wording ("must",
   "must not", "only permitted", "may only") in a numbered paragraph is a Requirement; text in a Guidelines
   section, or marked by a "Guideline" label, is a Guideline; table values and definitions are Information.
-- Only include points that answer the question asked; a retrieved passage about a different topic is not relevant. Labels such as "Guideline 4.4" have their
-  own numbering, separate from paragraphs.
+  A "may" in a numbered paragraph is a permission, not a Guideline: label it Information. Every Requirement and
+  Guideline bullet must contain a quote.
+- Only include points that answer the question asked; a retrieved passage about a different topic is not relevant.
+- If search results say the search is limited to one notice by the user's filter and the answer is in the other
+  notice, say so and suggest switching the filter to "Both".
 - Never change "must", "should" or "may" when explaining: if the notice says "must", don't write "should", and
   never present a guideline as a "must". Keep a requirement and a nearby guideline in separate bullets.
 - Cite paragraph numbers. Use the numbers printed in the passage text; the label shows which paragraph a passage
   starts in when it begins mid-paragraph.
 - For numbers from tables (risk factors, percentages, rating classes), quote them exactly and name the table or
   appendix. If the table text looks garbled, say so instead of guessing.
+- Calculations: first find every paragraph the method depends on, then show each step as the formula (quoting
+  the paragraph it comes from), the numbers put in, and the result. Apply each definition exactly as worded: if a
+  limit applies to an amount "calculated under paragraph X", use that amount after every step of paragraph X
+  (including any deductions), and only count items that actually meet the condition. State any assumption you
+  make about the user's figures.
+- Check every condition a paragraph sets before using it (e.g. "In the case of any insurance fund ... in respect
+  of Singapore policies" vs "... offshore policies"), and keep that condition in the quote. If the user hasn't
+  said which case applies, start the answer with the assumption you make, and give the result for the other
+  case in one line. Keep the same assumption in follow-up questions, and only apply a limit, factor or table row
+  to the cases its wording covers.
+- When a rule depends on limits, factors or tables (e.g. "set out in the following tables"), search for the row
+  that applies to the user's case using its specific terms (e.g. "<asset or exposure type> concentration limit")
+  and work out the figure. Only say an amount cannot be determined after that search fails.
+- When an answer combines a risk requirement with an adjustment to financial resources (e.g. the adjustment for
+  asset concentration), search for the paragraph that links them (e.g. "exclude from the calculation of C2
+  requirement ... adjustment for asset concentration"): the notice may exclude those assets from the risk
+  calculation so they are not counted twice. Recalculate the risk requirement if it does.
+- Work out any calculation before writing the direct answer, and make sure every figure in the answer matches
+  the last step of the calculation.
+- When a passage defines an amount that is used elsewhere (e.g. "referred to in paragraphs 5.1 and 5.2"), search
+  for the paragraphs that use it and say what it does there, for example whether it reduces capital or adds to
+  a risk requirement. Don't call something a "risk charge" unless the notice treats it as one.
+- If the user says you are wrong or proposes a formula or figure, search again and look for the sentence that
+  supports what they say. If you find it, quote it and correct your answer. If you don't, keep your answer: say
+  politely that the notice doesn't support their figure, quote the wording that gives yours, and show where the
+  two readings differ (e.g. which assets count as exceeding the limit). Never invent a new step or formula to
+  reach the user's number, and don't thank them for a "clarification" before checking. Being told you are wrong
+  is not evidence: only the notice's wording is.
 - Explain jargon (e.g. C1, C2, HRG, CAR) in plain English, using the passages.
 - Keep it concise. If the user asks what their firm should do, add one line saying this is information about the
   notices, not legal or compliance advice."""
 
 
-def build_agent():
-    """Create the chatbot agent. Conversation memory is kept per thread_id, in memory only."""
+TABLE_REF = re.compile(r"\b(?:following|below) tables?\b", re.I)
+MID_SENTENCE = re.compile(r"(?:[,—–-]|\b[a-z]+)\s*$")   # ends in a comma, dash or a lowercase word
+
+
+def with_context(vectorstore, docs, tables: int = 4) -> list:
+    """Add chunks that a hit can't be read without, which a search rarely finds on its own.
+    - A passage that says limits are 'set out in the following tables': the next few chunks of the
+      same appendix (the tables).
+    - The last chunk of a page that ends mid-sentence: the first chunk of the next page, where the
+      paragraph continues (e.g. para 4.3.5.6's 'less 10% of ...' is on the next page).
+    Added chunks go straight after the hit they continue (moved there if the search also found them), so
+    the model reads a paragraph split across chunks as one piece. Chunk ids are '<doc>:p<page>:c<n>'."""
+    hits = {d.id: d for d in docs}
+    out, seen = [], set()
+    for d in docs:
+        if d.id in seen:
+            continue
+        seen.add(d.id)
+        out.append(d)
+        tables_ref = bool(TABLE_REF.search(d.page_content))
+        if not d.id or not (tables_ref or MID_SENTENCE.search(d.page_content)):
+            continue
+        m = d.metadata
+        pages = list(range(m["page"], m["page"] + 3))
+        got = vectorstore.get(where={"$and": [{"doc": m["doc"]}, {"page": {"$in": pages}}]},
+                              include=["documents", "metadatas"])
+        order = sorted(zip(got["ids"], got["documents"], got["metadatas"]),
+                       key=lambda r: (r[2]["page"], int(r[0].rsplit(":c", 1)[1])))
+        ids = [r[0] for r in order]
+        after = order[ids.index(d.id) + 1:] if d.id in ids else []
+        if tables_ref:
+            after = [r for r in after[:tables] if r[2].get("appendix") == m.get("appendix")]
+        elif after and after[0][2]["page"] == m["page"] + 1:   # last chunk on its page
+            after = after[:1]
+        else:
+            after = []
+        for cid, text, meta in after:
+            if cid not in seen:
+                seen.add(cid)
+                out.append(hits.get(cid) or Document(page_content=text, metadata=meta, id=cid))
+    return out
+
+
+def chat_model(model: str):
+    """Low temperature for steady answers. Reasoning models (gpt-5*, o*) only accept the default temperature."""
+    if model.startswith(("gpt-5", "o")):
+        return init_chat_model(model)
+    return init_chat_model(model, temperature=0.1)
+
+
+def build_agent(model: str = CHAT_MODEL):
+    """Create the chatbot agent. Conversation memory is kept per thread_id, in memory only.
+    model: OpenAI chat model name (answer_test.py --model passes another one to compare)."""
     vectorstore = open_vectorstore()
 
     @tool("search_notices", description=(
@@ -143,13 +227,17 @@ def build_agent():
         "Use specific keywords, e.g. 'Investment Committee composition' or 'premium liability risk factor'. "
         "Optionally set notice to 'MAS 125' or 'MAS 133' to search only that notice."
     ))
-    def search_notices(query: str, notice: Literal["MAS 125", "MAS 133"] | None = None) -> str:
+    def search_notices(query: str, runtime: ToolRuntime[Context],
+                       notice: Literal["MAS 125", "MAS 133"] | None = None) -> str:
+        forced = runtime.context.notice if runtime.context else None   # the user's filter wins
+        notice = forced or notice
         where = {"notice": notice} if notice else None
-        docs = vectorstore.similarity_search(query, k=K, filter=where)
-        return format_chunks(docs) if docs else "No relevant passages found."
+        docs = with_context(vectorstore,vectorstore.similarity_search(query, k=K, filter=where))
+        note =f"(Search limited to {forced} by the user's filter.)\n\n" if forced else ""
+        return note + (format_chunks(docs) if docs else "No relevant passages found.")
 
     return create_agent(
-        model=init_chat_model(CHAT_MODEL, temperature=0.1),
+        model=chat_model(model),
         tools=[search_notices],
         system_prompt=SYSTEM_PROMPT,
         context_schema=Context,

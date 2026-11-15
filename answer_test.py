@@ -1,16 +1,30 @@
+"""Answer check -> answers.docx (or answers_<model>.docx with --model).
+
+    uv run python answer_test.py                      # one-shot questions + chatbot scenarios
+    uv run python answer_test.py --model gpt-4.1      # same, with another model, to compare
+    uv run python answer_test.py --scenarios-only     # only the multi-turn chatbot scenarios
+"""
+import argparse
 import re
+import uuid
 from typing import Literal
 
 from docx import Document as WordDocument
 from docx.shared import Pt, RGBColor
-from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from insurance_mas_rag import CHAT_MODEL, K, PROJECT_DIR, format_chunks, load_env, open_vectorstore
+from insurance_mas_rag import (CHAT_MODEL, K, PROJECT_DIR, Context, build_agent, chat_model, format_chunks,
+                               latest_turn, load_env, open_vectorstore)
+
+parser = argparse.ArgumentParser(description="Check chatbot answers and write a Word report.")
+parser.add_argument("--model", default=CHAT_MODEL, help=f"chat model to test (default {CHAT_MODEL})")
+parser.add_argument("--scenarios-only", action="store_true", help="skip the one-shot questions")
+args = parser.parse_args()
 
 load_env()
 
-OUT_PATH = PROJECT_DIR / "answers.docx"
+MODEL = args.model
+OUT_PATH = PROJECT_DIR / ("answers.docx" if MODEL == CHAT_MODEL else f"answers_{MODEL}.docx")
 RED, GREEN, GREY = RGBColor(0xC6, 0x28, 0x28), RGBColor(0x2E, 0x7D, 0x32), RGBColor(0x75, 0x75, 0x75)
 
 vectorstore = open_vectorstore()
@@ -36,7 +50,7 @@ class Answer(BaseModel):
     covered: bool = Field(description="False if the excerpts don't actually answer the question")
 
 
-llm = init_chat_model(CHAT_MODEL, temperature=0.1).with_structured_output(Answer)
+llm = chat_model(MODEL).with_structured_output(Answer)
 
 
 def answer(question: str) -> tuple[Answer, list]:
@@ -51,7 +65,7 @@ Rules:
 - type: "requirement" for binding wording ("must", "must not", "only permitted", "may only") in a numbered
   paragraph; "guideline" for text in a Guidelines section or an excerpt labelled "Guideline" (labels such as
   "Guideline 4.4" are numbered separately from paragraphs); "information" for definitions, table values and
-  other text with no obligation.
+  other text with no obligation. A "may" in a numbered paragraph is a permission, not a guideline: "information".
 - Only include points that answer the question asked. An excerpt about a different policy or topic is not
   relevant just because it was retrieved.
 - Never change "must", "should" or "may" in the explanation. Keep a requirement and a nearby guideline as
@@ -112,14 +126,58 @@ questions = [
     "How do I bake sourdough bread?",             # off-topic - should be covered=false
 ]
 
+# ---- Multi-turn scenarios, run through the real chatbot (search tool, follow-up searches, memory) ----
+# Each turn: (user message, [(what is checked, regex, should it match?)]). The regexes look for the key facts
+# a correct answer must state; read the full replies in the report too.
+M = r"\s*(?:m\b|mn\b|million)"
+SCENARIOS = {
+    "FX mismatch and asset concentration (MAS 133 para 4.3.5.6, Appendix 5E, para 5.1)": [
+        ("My insurance fund for Singapore policies has total assets of SGD 100m and zero liabilities, invested "
+         "20% SGD, 30% EUR and 50% USD, with no hedges. Calculate the foreign currency mismatch risk requirement "
+         "and give it as a % of market value.",
+         [("FX risk exposure of 70m (80m less 10% of assets)", r"\b70" + M, True),
+          ("risk requirement of 8.4m / 8.4%", r"\b8\.4\b", True)]),
+        ("Is there an adjustment for asset concentration for this fund? How much is it?",
+         [("adjustment of 30m (70m exposure over the 40m limit)", r"\b30" + M, True),
+          ("not 60m (100m less 40m counts the SGD assets as excess)", r"\b60" + M, False)]),
+        ("I think the adjustment is an additional risk charge on top of the 8.4m, right?",
+         [("says it is deducted from financial resources (para 5.1)", r"financial resources", True),
+          ("does not simply agree", r"^\W*(yes|correct|that's right|you are (right|correct)|you're (right|correct))\b", False)]),
+    ],
+    # Fund type not stated: 4.3.5.6 (Singapore policies, less 10%) vs 4.3.5.7 (offshore, less 20%). Singapore:
+    # exposure 76m - 10m = 66m, requirement 7.92m; concentration 66m - 40m = 26m (the 40% limit covers 4.3.5.6 only).
+    "FX with unstated fund type, then push-back to 60m": [
+        ("I have a SGD100m portfolio with 24% SGD, 26% EUR, 50% USD. What is my risk charge % MV?",
+         [("states the Singapore/offshore policies assumption", r"Singapore policies|offshore", True),
+          ("gives 7.92% for a Singapore-policies fund", r"\b7\.92\b", True)]),
+        ("I only want the concentration adjustment for FX risk, based on the portfolio I mentioned earlier.",
+         [("adjustment of 26m (66m exposure over the 40m limit)", r"\b26" + M, True)]),
+        ("This is not correct. The adjustment should be total assets less the limit: 100m - 40m = 60m.",
+         [("keeps 26m", r"=\s*(SGD\s*)?26" + M, True),
+          ("does not cave", r"^\W*(yes|correct|you are (right|correct)|you're (right|correct)|thank you for "
+                            r"(your|the) clarification)\b", False),
+          ("does not conclude 60m", r"\b(so|therefore|thus)\b,?[^\n]*\b60" + M, False)]),
+    ],
+    # Para 4.1.8: assets causing the concentration adjustment are excluded from C2. Excluding the 26m excess leaves
+    # 76m - 26m = 50m of FX positions, less 10m = 40m exposure (at the limit): 12% x 40m = 4.8m. Whether the 10%
+    # is of 100m or of the 74m left is not clear from the text, so 4.8% is a reading to confirm with an actuary.
+    "FX risk charge after the concentration adjustment (para 4.1.8)": [
+        ("I have a SGD100m portfolio with 24% SGD, 26% EUR, 50% USD, in an insurance fund for Singapore policies. "
+         "What is my risk charge % MV, after FX risk concentration adjustments?",
+         [("cites para 4.1.8 (excluded from C2)", r"4\.1\.8", True),
+          ("concentration adjustment of 26m", r"\b26" + M, True),
+          ("recalculates the FX requirement (4.8m / 4.8%)", r"\b4\.8\b", True)]),
+    ],
+}
+
 doc_out = WordDocument()
-doc_out.add_heading("Chatbot Answers", level=0)
+doc_out.add_heading(f"Chatbot Answers ({MODEL})", level=0)
 doc_out.add_paragraph("Each point shows its type, the quote from the notice, and an automatic check: "
                       "✓ the quote appears word for word in the retrieved passages and its type matches; "
                       "✗ something to look at.")
 total = flagged = 0
 
-for q in questions:
+for q in ([] if args.scenarios_only else questions):
     print(f"Answering: {q}")
     a, docs = answer(q)
     print(f"  covered={a.covered}  sources: {'; '.join(a.sources)}\n  {a.summary}")
@@ -153,8 +211,41 @@ for q in questions:
     run.font.size = Pt(9)
     run.font.color.rgb = GREY
 
-print(f"Checks: {total - flagged} of {total} points passed, {flagged} flagged.")
-doc_out.add_paragraph(f"Checks: {total - flagged} of {total} points passed, {flagged} flagged.")
+if not args.scenarios_only:
+    print(f"Checks: {total - flagged} of {total} points passed, {flagged} flagged.\n")
+    doc_out.add_paragraph(f"Checks: {total - flagged} of {total} points passed, {flagged} flagged.")
+
+agent = build_agent(MODEL)
+s_total = s_failed = 0
+doc_out.add_heading("Chatbot scenarios (multi-turn)", level=0)
+for name, turns in SCENARIOS.items():
+    print(f"Scenario: {name}")
+    doc_out.add_heading(name, level=1)
+    thread = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    for user_msg, expectations in turns:
+        result = agent.invoke({"messages": [{"role": "user", "content": user_msg}]},
+                              config=thread, context=Context(user_id="test"))
+        reply, searches, _ = latest_turn(result["messages"])
+        print(f"  USER: {user_msg}\n  SEARCHES: {' | '.join(searches)}\n  REPLY: {reply}\n")
+
+        run = doc_out.add_paragraph().add_run(f"User: {user_msg}")
+        run.bold = True
+        run = doc_out.add_paragraph().add_run(f"Searches: {' | '.join(searches)}")
+        run.font.size = Pt(9)
+        run.font.color.rgb = GREY
+        doc_out.add_paragraph(reply)
+        for what, pattern, should_match in expectations:
+            ok = bool(re.search(pattern, reply, re.I | re.M)) == should_match
+            s_total += 1
+            s_failed += not ok
+            print(f"    {'✓' if ok else '✗'} {what}")
+            run = doc_out.add_paragraph(style="List Bullet").add_run(f"{'✓' if ok else '✗'} {what}")
+            run.bold = True
+            run.font.color.rgb = GREEN if ok else RED
+        print()
+
+print(f"Scenario checks: {s_total - s_failed} of {s_total} passed.")
+doc_out.add_paragraph(f"Scenario checks: {s_total - s_failed} of {s_total} passed.")
 try:
     doc_out.save(OUT_PATH)
     print(f"Saved to {OUT_PATH}")

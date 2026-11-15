@@ -1,13 +1,24 @@
-# Nordic Glacier, soft grey (less glare)
+# Fintech (Stripe-inspired): bright white, pale grey-blue cards, rich blurple accent, dark navy text
 [theme]
 base = "light"
-backgroundColor = "#E2E8F0"            # soft slate grey: main page
-secondaryBackgroundColor = "#F1F5F9"   # lighter: chat box, expanders (look like cards)
-primaryColor = "#1E3A8A"               # deep winter navy: buttons, highlights
-borderColor = "#64748B"                # cool slate: borders
-textColor = "#0F172A"                  # dark ink
+backgroundColor = "#FFFFFF"            # white: main page
+secondaryBackgroundColor = "#F6F9FC"   # pale grey-blue: chat box, expanders (look like cards)
+primaryColor = "#635BFF"               # blurple: buttons, highlights
+linkColor = "#635BFF"
+borderColor = "#E3E8EE"                # soft grey-blue hairlines
+textColor = "#0A2540"                  # dark navy
+
+# Inter from Google Fonts (loaded by the viewer's browser), plain sans-serif if it can't load
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
+headingFontWeights = [650, 600, 600, 600, 600, 600]
+baseRadius = "0.5rem"                  # rounded cards and inputs
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+showSidebarBorder = true
 
 [theme.sidebar]
-backgroundColor = "#CBD5E1"            # darker slate
-secondaryBackgroundColor = "#E2E8F0"   # "New conversation" button
-textColor = "#0F172A"
+backgroundColor = "#F6F9FC"            # pale grey-blue
+secondaryBackgroundColor = "#FFFFFF"   # "New conversation" button
+textColor = "#0A2540"
+borderColor = "#E3E8EE"

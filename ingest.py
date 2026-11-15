@@ -28,6 +28,7 @@ splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200, ad
 HEADER = re.compile(r"^(MAS Notice \d+\s*\S\s*Notice on .*|Notice on [A-Z][a-z].*|\d{1,3})$")
 LONE_LABEL = re.compile(r"^(\d{1,2}(?:\.\d{1,2}){0,4}[A-Z]?\.?|\(?[a-z]{1,4}\)|[A-Z]\.)$")   # '17.', '(a)', 'b)', 'B.'
 APPENDIX = re.compile(r"^Appendix\s+([0-9]*[A-Z]{0,2}(?:-[IVX]+)?)$")
+SECTION = re.compile(r"^[A-Z]\.\s+[A-Z][A-Za-z ,’()'&/-]{3,90}$")   # 'F. Adjustment for Asset Concentration'
 
 
 # Some Calibri glyphs in MAS 133 have a broken character map and come out as spaces:
@@ -305,6 +306,7 @@ def load_pdf(path: Path) -> list[Document]:
     tracker = ParaTracker()
     chunks: list[Document] = []
     spaces: dict = {}                             # for check_spaces()
+    app_title = section = ""                      # for appendix chunks' context line
 
     with pymupdf.open(path) as pdf:
         for page_no, page in enumerate(pdf):
@@ -312,10 +314,27 @@ def load_pdf(path: Path) -> list[Document]:
             if not text:
                 continue
 
-            for line in text.split("\n")[:6]:    # an appendix title sits at the top of its first page
+            lines = text.split("\n")
+            for i, line in enumerate(lines[:6]):  # an appendix title sits at the top of its first page
                 if m := APPENDIX.match(line):
                     tracker.set_appendix(m.group(1))
+                    title = []
+                    for t in lines[i + 1:i + 4]:  # the capitalised title lines after 'Appendix 5E'
+                        if not (re.search(r"[A-Z]", t) and t == t.upper()):
+                            break
+                        title.append(t.strip())
+                    app_title, section = " ".join(title)[:90], ""
                     break
+            # Lettered sections inside an appendix ('F. Adjustment for Asset Concentration'), by offset
+            sections, offset = [], 0
+            for i, line in enumerate(lines):
+                following = lines[i + 1] if i + 1 < len(lines) else ""
+                # A heading is short and stands alone; a list item ('B. The simplified balance sheet
+                # of the MA portfolio containing') wraps onto a line starting in lowercase
+                if (tracker.appendix and SECTION.match(line) and len(line.strip()) <= 60
+                        and not following[:1].islower()):
+                    sections.append((offset, line.strip()))
+                offset += len(line) + 1
 
             carried = tracker.current             # paragraph continuing from the previous page
             markers = tracker.scan(text)
@@ -326,8 +345,15 @@ def load_pdf(path: Path) -> list[Document]:
                       for seg_start, seg in segments(text)
                       for d in splitter.create_documents([seg])]
             for start, content in pieces:
-                chunk = Document(page_content=content, metadata=dict(meta))
                 end = start + len(content)
+                # Context line for appendix chunks: a table chunk ('Item Description of limit...') then
+                # carries its appendix and section names, so a search for the section topic finds it
+                section = next((s for off, s in reversed(sections) if off <= start + 60),   # starts in it
+                               next((s for off, s in sections if off < end), section))   # or first inside
+                if tracker.appendix:
+                    context = f"Appendix {tracker.appendix}" + (f": {app_title}" if app_title else "")
+                    content = f"[{context}{f' · {section}' if section else ''}]\n{content}"
+                chunk = Document(page_content=content, metadata=dict(meta))
                 before = [n for off, n in markers if off <= start]
                 inside = [(off, n) for off, n in markers if start < off < end]
                 para_start = before[-1] if before else carried
