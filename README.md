@@ -25,7 +25,7 @@ It comes in two forms: a chat in the terminal and a web app.
    appendix it belongs to. The chunks are embedded with OpenAI's
    `text-embedding-3-large` and saved to a local [Chroma](https://www.trychroma.com/)
    database in `chroma_db/`.
-2. **Ask:** an agent (`gpt-4.1` via LangChain) decides what to search for
+2. **Ask:** an agent (`gpt-4.1-mini` via LangChain) decides what to search for
    (optionally just one notice), retrieves the 10 closest chunks, follows
    cross-references with further searches, and writes an answer with citations.
    It remembers the conversation, so follow-up questions work.

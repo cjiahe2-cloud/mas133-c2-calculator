@@ -27,7 +27,7 @@ PDF_DIR = PROJECT_DIR / "s3-rag-mas"
 DB_DIR = PROJECT_DIR / "chroma_db"
 COLLECTION = "mas_notices"
 EMBED_MODEL = "text-embedding-3-large"   # changing this means re-ingesting
-CHAT_MODEL = "gpt-4.1"   # gpt-4.1-mini caved to push-back on calculations (answer_test.py scenarios)
+CHAT_MODEL = "gpt-4.1-mini"   # gpt-4.1 held up better against push-back on calculations (answer_test.py scenarios)
 K = 10                                   # passages retrieved per search
 
 NOTICES = ("MAS 125", "MAS 133")
