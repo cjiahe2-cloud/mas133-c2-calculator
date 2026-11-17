@@ -371,7 +371,9 @@ def dcf_interest_rate_requirement(assets: list[dict], liabilities: list[dict]) -
 # long-term credit quality class -> bp shock for (term <= 5y, 5y < term <= 10y, term > 10y)
 SPREAD_LONG = {"A": (105, 95, 90), "B": (120, 115, 95), "C": (165, 145, 125), "D": (245, 230, 215),
                "E": (405, 365, 355), "F": (540, 500, 475), "unrated": (325, 298, 285)}
-RATING_CLASS = {"AAA": "A", "AA": "B", "A": "C", "BBB": "D", "BB": "E", "B": "F", "CCC": "F"}  # Appendix 4K
+# Appendix 4K (p.162) credit quality classes; Appendix 4L (p.163) counterparty risk classes use the same mapping.
+# CCC+ and below is class G (Table 4F-II/III shocks treat G as "F and below", see spread_shock).
+RATING_CLASS = {"AAA": "A", "AA": "B", "A": "C", "BBB": "D", "BB": "E", "B": "F", "CCC": "G"}
 
 
 def spread_shock(credit_class: str, term: float) -> float:

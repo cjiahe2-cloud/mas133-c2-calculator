@@ -179,6 +179,31 @@ check("  ...contributions add up to C2", sum(v1.contributions.values()), v1.c2, 
 v2 = calc.aggregate_c2({"equity": 155, "interest_rate": 63, "credit_spread": 58.52, "fx": 12}, "down", 0.16)
 check("Model portfolio v2 C2", v2.c2, 245.42)
 
+print("-- Sample portfolio for the public calculator page (portfolio.py, calc_app.py)")
+# The user's sample insurer: v1 above, but the FX forward is 70% of the fund (700m), not 800m -> default 7 x 2%.
+from insurance_mas_rag.portfolio import SAMPLE_PORTFOLIO, analyse, validate, weighted_durations  # noqa: E402
+
+check("Sample portfolio inputs are valid", not validate(SAMPLE_PORTFOLIO), True)
+sample = analyse(SAMPLE_PORTFOLIO)
+for module, expected in (("equity", 215), ("interest_rate", 81), ("credit_spread", 52.72), ("property", 0),
+                         ("fx", 12), ("default", 0.14)):
+    check(f"Sample {module} (same as v1, default from a 700m forward)", sample.modules[module], expected)
+check("Sample C2 (hand: aggregate of the above, downward table)", sample.c2.c2, 310.50)
+check("Sample breaches no concentration limit (count of breaches)", sum(r.breach for r in sample.limits), 0)
+check("Sample has no concentration adjustment", sample.concentration_adjustment, 0)
+bond_dur, port_dur = weighted_durations(SAMPLE_PORTFOLIO["allocation"], SAMPLE_PORTFOLIO["duration"])
+check("Sample bond duration (all bonds at 8y)", bond_dur, 8)
+check("Appendix 4K/4L: CCC+ and below is class G", calc.RATING_CLASS["CCC"] == "G", True)
+check("Class G bond takes the 'F and below' spread shock (8y: 500bp)", calc.spread_shock("G", 8), 500)
+for fwd, expected in (("AAA", 0.035), ("BB", 0.735), ("B", 1.4)):   # 7m credit equivalent x 0.5% / 10.5% / 20%
+    check(f"FX forward bank rated {fwd}: default charge", analyse(SAMPLE_PORTFOLIO | {"forward_rating": fwd}).modules["default"], expected, 3)
+rerated = analyse(SAMPLE_PORTFOLIO | {"rating": {"corp_ig": "BBB", "corp_hy": "CCC"}})
+check("Ratings picked by the user: IG BBB 230bp, HY CCC 500bp (hand: 18.4 + 40 + 11.92)",
+      rerated.modules["credit_spread"], 70.32)
+check("Sample portfolio duration (hand: 45% bonds x 8y, equity at 0)", port_dur, 3.6)
+check("Weighted bond duration (hand: (10 x 5 + 30 x 10) / 40)", weighted_durations(
+    {"sgs": .1, "corp_ig": .3, "eq_dm": .6}, {"sgs": 5, "corp_ig": 10})[0], 8.75)
+
 print(f"\n{total - failed} of {total} passed.")
 print("\nNote: MAS Appendix 4B Guideline 4 (infrastructure CIS) adds 28% + 15% = 43% without the 0.75 correlation of "
       "para 4.3.2.1 a)iii), which would give 40.5%. The calculator follows para 4.3.2.1; ask MAS or an actuary which "
