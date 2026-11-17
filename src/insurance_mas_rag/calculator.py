@@ -5,11 +5,15 @@
   resources (para 5.1(a)(ii))
 - the FX requirement recalculated after excluding the assets that cause the concentration adjustment
   from the C2 calculation (para 4.1.8)
+- the other C2 modules and their aggregation (second half of the file): equity (4.3.2), interest rate mismatch
+  and credit spread by the duration approach or by discounted cash flows (4.3.3), property (4.3.4), counterparty default (4.3.6),
+  miscellaneous (4.3.7) and the diversified C2 (4.3.1.1, 4.3.1.4) with an Euler split per module
 
 All amounts are SGD millions. How the FX part of the adjustment is worked out is set by FX_ADJUSTMENT_METHOD
 below (the user's reading: total asset value less the 40% limit). The interpretation of para 4.1.8 (which assets are excluded, and whether the
 10% / 20% deduction base shrinks with them) is our reading of the text: it should be confirmed by an actuary.
 """
+import math
 from dataclasses import dataclass, field
 
 MIN_LIMIT = 5.0          # para 17B: a limit of $5 million applies where the % limit gives less
@@ -192,3 +196,313 @@ def calculate(fund_type: str, total_assets: float, fx_positions: dict[str, float
     else:
         r.add("The para 4.1.8 step is an interpretation of the notice; have an actuary confirm before relying on it.")
     return r
+
+
+# =====================================================================================================
+# C2 investment risk requirement (MAS 133 paras 4.3.1-4.3.7). Amounts in SGD millions, rates as decimals.
+# Each module returns (requirement, steps) so callers can show the working. Interpretation choices are
+# marked "Assumption:" in the steps; an actuary should confirm them.
+# =====================================================================================================
+
+# ---- Equity (para 4.3.2.1, Tables 4D-I / 4D-II, Guideline 4.12C) ----
+EQUITY_STRESS = {"A": 0.35, "B": 0.50, "A_infra": 0.35, "B_infra": 0.40}   # A' / B' = qualifying infrastructure
+EQUITY_SEGMENT_CORR = {"A": 0.90, "B": 0.75}                                # A with A', B with B'
+CCA_BANDS = (0.05, 0.0, -0.05, -0.10)                                       # Table 4D-IV: allowed CCA values
+
+
+def equity_requirement(holdings: list[dict], cca_a: float = 0.0, cca_b: float = 0.0) -> tuple[float, list[str]]:
+    """holdings: [{"segment": "A" | "B" | "A_infra" | "B_infra", "amount": SGD m, "name": optional}].
+    Segment A = listed in Developed Markets (MSCI World constituents); B = other markets, unlisted, private
+    equity, hedge funds, commodities. cca_a / cca_b: the Table 4D-IV cyclical adjustment added to the A / B
+    stress (not to the infrastructure stresses)."""
+    for c in (cca_a, cca_b):
+        if c not in CCA_BANDS:
+            raise ValueError(f"CCA must be one of {CCA_BANDS}")
+    stress = dict(EQUITY_STRESS, A=EQUITY_STRESS["A"] + cca_a, B=EQUITY_STRESS["B"] + cca_b)
+    seg = {k: 0.0 for k in EQUITY_STRESS}
+    steps = []
+    for h in holdings:
+        s = h["segment"]
+        if s not in stress:
+            raise ValueError(f"segment must be one of {list(stress)}")
+        charge = h["amount"] * stress[s]
+        seg[s] += charge
+        steps.append(f"   {h.get('name', s)}: {m(h['amount'])} x {stress[s]:.0%} (segment {s}) = {m(charge)}")
+    dm = math.sqrt(seg["A"] ** 2 + seg["A_infra"] ** 2 + 2 * 0.90 * seg["A"] * seg["A_infra"])
+    other = math.sqrt(seg["B"] ** 2 + seg["B_infra"] ** 2 + 2 * 0.75 * seg["B"] * seg["B_infra"])
+    steps.append(f"   Developed markets: (A {m(seg['A'])}, A' {m(seg['A_infra'])}, corr 0.9) = {m(dm)}")
+    steps.append(f"   Other markets: (B {m(seg['B'])}, B' {m(seg['B_infra'])}, corr 0.75) = {m(other)}")
+    steps.append(f"   Equity investment risk requirement = {m(dm)} + {m(other)} = {m(dm + other)} (para 4.3.2.1 a)iii))")
+    return dm + other, steps
+
+
+def cis_no_look_through(amount: float) -> float:
+    """Appendix 4B para 5: a CIS not looked through takes a 50% charge on market value."""
+    return 0.50 * amount
+
+
+# ---- Interest rate mismatch (para 4.3.3.2, Table 4E) ----
+# term in years -> (upward %, downward %) of the base yield
+IR_FACTORS = {0.25: (1.00, -0.75), 0.5: (1.00, -0.70), 1: (1.00, -0.70), 2: (1.00, -0.70), 3: (0.95, -0.65),
+              4: (0.95, -0.65), 5: (0.90, -0.60), 6: (0.85, -0.55), 7: (0.80, -0.50), 8: (0.80, -0.50),
+              9: (0.75, -0.45), 10: (0.70, -0.40), 11: (0.65, -0.40), 12: (0.60, -0.35), 13: (0.60, -0.35),
+              14: (0.55, -0.30), 15: (0.50, -0.30), 16: (0.45, -0.30), 17: (0.40, -0.30), 18: (0.35, -0.25),
+              19: (0.30, -0.25), 20: (0.25, -0.25)}
+IR_CAP = 0.02   # para 4.3.3.2 b)(i)C: absolute adjustment at most 200bp
+
+
+def ir_factors(term: float) -> tuple[float, float]:
+    """Closest Table 4E term (para 4.3.3.2 b)(iv)); 20 years and above use the 20-year row. Where a term is
+    exactly halfway between two rows, the row with the larger shocks is used (Assumption: the notice does
+    not say)."""
+    if term >= 20:
+        return IR_FACTORS[20]
+    best = min(abs(k - term) for k in IR_FACTORS)
+    rows = [IR_FACTORS[k] for k in IR_FACTORS if abs(abs(k - term) - best) < 1e-9]
+    return max(rows, key=lambda r: abs(r[0]) + abs(r[1]))
+
+
+def ir_shocks(term: float, base_yield: float) -> tuple[float, float]:
+    """Absolute (upward, downward) yield moves for a cash flow at `term`, capped at 200bp each way."""
+    up, down = ir_factors(term)
+    return min(up * base_yield, IR_CAP), min(abs(down) * base_yield, IR_CAP)
+
+
+def interest_rate_requirement(assets: list[dict], liabilities: list[dict]) -> tuple[float, str, list[str]]:
+    """Simplified (duration) approach of para 4.3.3.2 c)(i).
+    assets / liabilities: [{"value": SGD m, "duration": years, "yield": base yield, "term": optional, "name"}].
+    `term` picks the Table 4E row (fixed-rate bonds: term to final maturity, para 4.3.3.2 b)(ivA)); it
+    defaults to the duration, which is an approximation. Returns (requirement, dominant scenario, steps).
+    The change in value is -value x duration x shift, with no convexity."""
+    steps, d_up, d_dn = [], 0.0, 0.0
+    for side, items, sign in (("Asset", assets, 1), ("Liability", liabilities, -1)):
+        for x in items:
+            term = x.get("term", x["duration"])
+            up, dn = ir_shocks(term, x["yield"])
+            ch_up, ch_dn = -x["value"] * x["duration"] * up, x["value"] * x["duration"] * dn
+            d_up += sign * ch_up
+            d_dn += sign * ch_dn
+            steps.append(f"   {side} {x.get('name', '')} {m(x['value'])}, duration {x['duration']}, term {term}y, "
+                         f"yield {x['yield']:.2%}: up {up * 1e4:.0f}bp -> {m(ch_up)}, down {dn * 1e4:.0f}bp -> "
+                         f"{m(ch_dn)}".replace("  ", " "))
+            if "term" not in x:
+                steps.append("      Assumption: Table 4E term taken as the duration (the notice uses the cash flow "
+                             "term, e.g. term to final maturity).")
+    req = max(0.0, -d_up, -d_dn)
+    scenario = "down" if -d_dn >= -d_up else "up"
+    steps.append(f"   Change in net assets: up {m(d_up)}, down {m(d_dn)}")
+    steps.append(f"   Interest rate mismatch risk requirement = larger fall = {m(req)} ({scenario} scenario, "
+                 "para 4.3.3.2 b)(iii))")
+    return req, scenario, steps
+
+
+# ---- Interest rate mismatch, discounted cash flow approach (para 4.3.3.2 b), Guideline 4.14) ----
+# Each cash flow is discounted at base spot rate + unshocked spread, annual compounding. The Table 4E shock for
+# the cash flow's own (closest) term is applied to the base curve only: the government curve for assets, the
+# risk-free spot curve for liabilities (para 4.3.3.2 b)(i)A). Spreads (an asset's credit spread, a liability's
+# MA or IP spread) are not shocked.
+
+def curve_rate(curve, t: float) -> float:
+    """curve: a flat rate, or {term: spot rate} with linear interpolation and flat extrapolation."""
+    if isinstance(curve, (int, float)):
+        return float(curve)
+    pts = sorted(curve.items())
+    if t <= pts[0][0]:
+        return pts[0][1]
+    for (t0, r0), (t1, r1) in zip(pts, pts[1:]):
+        if t <= t1:
+            return r0 + (r1 - r0) * (t - t0) / (t1 - t0)
+    return pts[-1][1]
+
+
+def present_value(cash_flows: list[tuple[float, float]], curve, spread: float = 0.0, shock: str | None = None,
+                  extra: float = 0.0) -> float:
+    """shock: None, "up" or "down" (Table 4E per cash flow, capped at 200bp); extra: a parallel add-on (credit
+    spread shock)."""
+    total = 0.0
+    for t, amount in cash_flows:
+        base = curve_rate(curve, t)
+        if shock:
+            up, dn = ir_shocks(t, base)
+            base = base + up if shock == "up" else base - dn
+        total += amount / (1 + base + spread + extra) ** t
+    return total
+
+
+def bond_cash_flows(face: float, coupon: float, maturity: int) -> list[tuple[float, float]]:
+    """Annual-coupon fixed-rate bullet bond."""
+    return [(t, face * coupon + (face if t == maturity else 0.0)) for t in range(1, maturity + 1)]
+
+
+def duration(cash_flows: list[tuple[float, float]], curve, spread: float = 0.0) -> float:
+    """Modified duration by a 1bp parallel bump (for reporting and calibration)."""
+    p0 = present_value(cash_flows, curve, spread)
+    return (p0 - present_value(cash_flows, curve, spread, extra=1e-4)) / p0 / 1e-4
+
+
+def scale_to(cash_flows: list[tuple[float, float]], value: float, curve, spread: float = 0.0):
+    """Scale cash flows so their base present value equals `value` (e.g. a fund's market value)."""
+    k = value / present_value(cash_flows, curve, spread)
+    return [(t, a * k) for t, a in cash_flows]
+
+
+def dcf_interest_rate_requirement(assets: list[dict], liabilities: list[dict]) -> tuple[float, str, list[str]]:
+    """assets / liabilities: [{"cash_flows": [(years, amount)], "curve": flat rate or {term: rate},
+    "spread": unshocked add-on, "name"}]. Returns (requirement, dominant scenario, steps)."""
+    steps, d_up, d_dn = [], 0.0, 0.0
+    for side, items, sign in (("Asset", assets, 1), ("Liability", liabilities, -1)):
+        for x in items:
+            cf, cv, sp = x["cash_flows"], x["curve"], x.get("spread", 0.0)
+            base, up, dn = (present_value(cf, cv, sp, s) for s in (None, "up", "down"))
+            d_up += sign * (up - base)
+            d_dn += sign * (dn - base)
+            steps.append(f"   {side} {x.get('name', '')}: value {m(base)} (modified duration "
+                         f"{duration(cf, cv, sp):.1f}); up -> {m(up)} ({m(up - base)}), down -> {m(dn)} "
+                         f"({m(dn - base)})".replace("  ", " "))
+    req = max(0.0, -d_up, -d_dn)
+    scenario = "down" if -d_dn >= -d_up else "up"
+    steps.append(f"   Change in net assets: up {m(d_up)}, down {m(d_dn)}")
+    steps.append(f"   Interest rate mismatch risk requirement = larger fall = {m(req)} ({scenario} scenario, "
+                 "para 4.3.3.2 b)(iii)), discounted cash flow approach")
+    return req, scenario, steps
+
+
+# ---- Credit spread (para 4.3.3.3, Tables 4F-II / 4F-III, Appendix 4K) ----
+# long-term credit quality class -> bp shock for (term <= 5y, 5y < term <= 10y, term > 10y)
+SPREAD_LONG = {"A": (105, 95, 90), "B": (120, 115, 95), "C": (165, 145, 125), "D": (245, 230, 215),
+               "E": (405, 365, 355), "F": (540, 500, 475), "unrated": (325, 298, 285)}
+RATING_CLASS = {"AAA": "A", "AA": "B", "A": "C", "BBB": "D", "BB": "E", "B": "F", "CCC": "F"}  # Appendix 4K
+
+
+def spread_shock(credit_class: str, term: float) -> float:
+    """Shock in bp. credit_class: "A".."G" (Appendix 4K class, G uses "F and below"), "unrated",
+    "statutory_board" (50% of class A, para 4.3.3.3 e)) or "sovereign_exempt" (central government or central
+    bank rated class C or better, para 4.3.3.3 i): no charge)."""
+    if credit_class == "sovereign_exempt":
+        return 0.0
+    col = 0 if term <= 5 else 1 if term <= 10 else 2
+    if credit_class == "statutory_board":
+        return 0.5 * SPREAD_LONG["A"][col]
+    return SPREAD_LONG["F" if credit_class == "G" else credit_class][col]
+
+
+def credit_spread_requirement(holdings: list[dict]) -> tuple[float, list[str]]:
+    """holdings: [{"value", "duration", "class", "term": optional (defaults to duration), "name"}].
+    Fall in value = value x spread duration x shock (duration approach; spread duration taken as duration)."""
+    total, steps = 0.0, []
+    for h in holdings:
+        term = h.get("term", h["duration"])
+        bp = spread_shock(h["class"], term)
+        loss = h["value"] * h["duration"] * bp / 1e4
+        total += loss
+        steps.append(f"   {h.get('name', h['class'])}: {m(h['value'])} x {h['duration']} x {bp:g}bp "
+                     f"(class {h['class']}, term {term}y) = {m(loss)}")
+    steps.append(f"   Credit spread risk requirement = {m(total)} (para 4.3.3.3 b)(iii))")
+    return total, steps
+
+
+def dcf_credit_spread_requirement(holdings: list[dict]) -> tuple[float, list[str]]:
+    """holdings: [{"cash_flows", "curve" (government), "spread" (the bond's current credit spread), "class",
+    "term": optional (defaults to the last cash flow, i.e. final maturity), "name"}]. Revalues each bond with the
+    constant bp shock added to its yield curve (para 4.3.3.3 b)(ii))."""
+    total, steps = 0.0, []
+    for h in holdings:
+        term = h.get("term", max(t for t, _ in h["cash_flows"]))
+        bp = spread_shock(h["class"], term)
+        base = present_value(h["cash_flows"], h["curve"], h.get("spread", 0.0))
+        shocked = present_value(h["cash_flows"], h["curve"], h.get("spread", 0.0), extra=bp / 1e4)
+        total += base - shocked
+        steps.append(f"   {h.get('name', h['class'])}: value {m(base)}, +{bp:g}bp (class {h['class']}, term "
+                     f"{term}y) -> {m(shocked)}; fall {m(base - shocked)}")
+    steps.append(f"   Credit spread risk requirement = {m(total)} (para 4.3.3.3 b)(iii)), discounted cash flows")
+    return total, steps
+
+
+# ---- Property (para 4.3.4.1) ----
+def property_requirement(direct: float = 0.0, cis_no_look_through_value: float = 0.0) -> float:
+    return 0.30 * direct + 0.50 * cis_no_look_through_value
+
+
+# ---- Counterparty default (para 4.3.6, Table 4H, Appendix 4H) ----
+DEFAULT_CHARGE = {"A": 0.005, "B": 0.01, "C": 0.02, "D": 0.05, "E": 0.105, "F": 0.20, "G": 0.485,
+                  "unrated": 0.0775}
+FX_CREDIT_EXPOSURE_FACTOR = ((14 / 365, 0.0), (1, 0.01), (5, 0.05), (float("inf"), 0.075))  # Appendix 4H (3)
+
+
+def fx_forward_exposure(notional: float, maturity_years: float, replacement_cost: float = 0.0,
+                        original_maturity_years: float | None = None) -> float:
+    """Credit equivalent amount of an FX contract (para 4.3.6.4 d)): replacement cost if positive plus potential
+    credit exposure (notional x Appendix 4H factor). Original maturity of 14 days or less: zero."""
+    if (original_maturity_years if original_maturity_years is not None else maturity_years) <= 14 / 365:
+        return 0.0
+    factor = next(f for limit, f in FX_CREDIT_EXPOSURE_FACTOR[1:] if maturity_years <= limit)
+    return max(replacement_cost, 0.0) + notional * factor
+
+
+def default_requirement(exposures: list[dict]) -> tuple[float, list[str]]:
+    """exposures: [{"amount": credit-equivalent SGD m, "class": Appendix 4L class or "unrated", "name"}]."""
+    total, steps = 0.0, []
+    for e in exposures:
+        r = e["amount"] * DEFAULT_CHARGE[e["class"]]
+        total += r
+        steps.append(f"   {e.get('name', '')} {m(e['amount'])} x {DEFAULT_CHARGE[e['class']]:.2%} "
+                     f"(class {e['class']}) = {m(r)}".replace("  ", " "))
+    steps.append(f"   Counterparty default risk requirement = {m(total)}")
+    return total, steps
+
+
+# ---- Miscellaneous (para 4.3.7.1) ----
+def misc_requirement(other_assets: float) -> float:
+    """8% of assets with no other C2 charge (excluding cash and non-standard instruments)."""
+    return 0.08 * other_assets
+
+
+# ---- Aggregation (paras 4.3.1.1, 4.3.1.4, Tables 4C-I / 4C-II) ----
+MARKET_MODULES = ("equity", "interest_rate", "credit_spread", "property", "fx")
+CORR_UP = ((1, .1, .8, .8, .1), (.1, 1, .1, .1, .1), (.8, .1, 1, .5, .1), (.8, .1, .5, 1, .1), (.1, .1, .1, .1, 1))
+CORR_DOWN = ((1, .5, .8, .8, .1), (.5, 1, .5, .25, .1), (.8, .5, 1, .5, .1), (.8, .25, .5, 1, .1),
+             (.1, .1, .1, .1, 1))
+CORR_MARKET_DEFAULT = 0.5
+
+
+@dataclass
+class C2Result:
+    market: float
+    c2: float
+    undiversified: float
+    contributions: dict[str, float]     # Euler allocation of c2; sums to c2
+    lines: list[str] = field(default_factory=list)
+
+
+def aggregate_c2(modules: dict[str, float], scenario: str, default: float = 0.0, misc: float = 0.0) -> C2Result:
+    """modules: requirement per MARKET_MODULES key (missing = 0). scenario: "up" or "down", the interest rate
+    scenario that gave the interest rate requirement, which picks Table 4C-I or 4C-II."""
+    if scenario not in ("up", "down"):
+        raise ValueError("scenario must be 'up' or 'down'")
+    unknown = set(modules) - set(MARKET_MODULES)
+    if unknown:
+        raise ValueError(f"unknown modules {unknown}; expected {MARKET_MODULES}")
+    corr = CORR_DOWN if scenario == "down" else CORR_UP
+    v = [modules.get(k, 0.0) for k in MARKET_MODULES]
+    market = math.sqrt(sum(corr[i][j] * v[i] * v[j] for i in range(5) for j in range(5)))
+    rho = CORR_MARKET_DEFAULT
+    core = math.sqrt(market ** 2 + default ** 2 + 2 * rho * market * default)
+    c2 = misc + core
+    # Euler allocation: each term's marginal share of the square-root parts; misc adds 1:1.
+    contrib = {}
+    if core:
+        for i, k in enumerate(MARKET_MODULES):
+            dm = sum(corr[i][j] * v[j] for j in range(5)) / market if market else 0.0
+            contrib[k] = v[i] * dm * (market + rho * default) / core
+        contrib["default"] = default * (default + rho * market) / core
+    else:
+        contrib = {k: 0.0 for k in (*MARKET_MODULES, "default")}
+    contrib["misc"] = misc
+    undiv = sum(v) + default + misc
+    table = "4C-II (downward)" if scenario == "down" else "4C-I (upward)"
+    lines = [f"   Market modules: " + ", ".join(f"{k} {m(x)}" for k, x in zip(MARKET_MODULES, v)),
+             f"   C2 market = sqrt(sum corr x Mi x Mj), Table {table} = {m(market)} (para 4.3.1.4)",
+             f"   C2 = misc {m(misc)} + sqrt({m(market)}^2 + default {m(default)}^2 + 2 x 0.5 x market x default)"
+             f" = {m(c2)} (para 4.3.1.1)",
+             f"   Undiversified sum {m(undiv)}; diversification benefit {m(undiv - c2)}"]
+    return C2Result(market, c2, undiv, contrib, lines)
