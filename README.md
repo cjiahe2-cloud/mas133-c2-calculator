@@ -76,7 +76,7 @@ Replace the old PDF in `s3-rag-mas/` with the new one, then re-embed that notice
 
 If you add a revised PDF and forget `--rebuild`, `ingest.py` warns you that
 an older revision is still in the store. Also update the versions in
-`SYSTEM_PROMPT` (`src/insurance_mas_rag/__init__.py`) and in this README.
+`SYSTEM_PROMPT` (`src/insurance_mas_rag/rag.py`) and in this README.
 
 ## Use
 
@@ -107,7 +107,7 @@ If a script prints "Could not save", close the `.docx` file in Word and run it a
 ## Project layout
 
 ```
-src/insurance_mas_rag/__init__.py   shared settings, prompt and agent (change models here)
+src/insurance_mas_rag/rag.py        shared settings, prompt and agent (change models here)
 src/insurance_mas_rag/calculator.py FX mismatch requirement and asset concentration calculator
 ingest.py                           PDFs -> chroma_db/ (with paragraph tagging)
 chat.py                             terminal chat
@@ -119,7 +119,7 @@ calc_test.py                        calculator check (no API calls)
 .streamlit/config.toml              web app theme
 ```
 
-If you change `EMBED_MODEL` in `src/insurance_mas_rag/__init__.py`, delete
+If you change `EMBED_MODEL` in `src/insurance_mas_rag/rag.py`, delete
 `chroma_db/` and re-run `ingest.py`. Questions and chunks must be embedded by
 the same model, and a different model can produce vectors of a different size,
 which the existing database won't accept.

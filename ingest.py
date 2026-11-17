@@ -20,7 +20,7 @@ import pymupdf
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from insurance_mas_rag import PDF_DIR, citation, load_env, notice_name, notice_version, open_vectorstore
+from insurance_mas_rag.rag import PDF_DIR, citation, load_env, notice_name, notice_version, open_vectorstore
 
 splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200, add_start_index=True)
 

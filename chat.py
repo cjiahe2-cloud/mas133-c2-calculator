@@ -1,4 +1,4 @@
-from insurance_mas_rag import Context, build_agent, latest_turn, load_env
+from insurance_mas_rag.rag import Context, build_agent, latest_turn, load_env
 
 load_env()
 

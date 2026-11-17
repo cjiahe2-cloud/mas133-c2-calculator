@@ -5,7 +5,7 @@ import uuid
 
 import streamlit as st
 
-from insurance_mas_rag import CALC_HEADER, CALC_PASSAGES, CHAT_MODEL, PROJECT_DIR, Context, build_agent, latest_turn, load_env
+from insurance_mas_rag.rag import CALC_HEADER, CALC_PASSAGES, CHAT_MODEL, PROJECT_DIR, Context, build_agent, latest_turn, load_env
 
 FROG = str(PROJECT_DIR / "assets" / "pink_frog.png")
 USER_ICON = ":material/person:"

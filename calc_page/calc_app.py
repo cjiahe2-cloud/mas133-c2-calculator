@@ -1,19 +1,26 @@
-"""Public MAS 133 C2 investment risk calculator: uv run streamlit run calc_app.py
+"""Public MAS 133 C2 investment risk calculator: uv run streamlit run calc_page/calc_app.py
 
 No OpenAI key needed: pure Python on top of src/insurance_mas_rag/calculator.py and portfolio.py.
 Starts from the sample portfolio (SAMPLE_PORTFOLIO); visitors can change any input.
+
+Lives in its own folder so Streamlit Community Cloud installs calc_page/requirements.txt (streamlit, pandas)
+instead of the repo's uv.lock with the chatbot's dependencies. The package isn't installed there, so src/ is
+put on the path below.
 """
 import base64
 import copy
+import sys
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from insurance_mas_rag.portfolio import (ASSET_CLASSES, FORWARD_RATING, SAMPLE_PORTFOLIO, analyse, validate,
-                                         weighted_durations)
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from insurance_mas_rag.portfolio import (ASSET_CLASSES, FORWARD_RATING, SAMPLE_PORTFOLIO, analyse,  # noqa: E402
+                                         validate, weighted_durations)
 
-FROG = str(Path(__file__).parent / "assets" / "pink_frog.png")
+FROG = str(ROOT / "assets" / "pink_frog.png")
 st.set_page_config(page_title="MAS 133 C2 Calculator", page_icon=FROG, layout="wide")
 
 MODULES = [  # key, label, MAS 133 reference
@@ -45,6 +52,8 @@ header[data-testid="stHeader"] { background: transparent; }
 .status.ok { background: #ECFDF3; color: #067647; border: 1px solid #ABEFC6; }
 .status.bad { background: #FEF3F2; color: #B42318; border: 1px solid #FECDCA; }
 .note { font-size: .82rem; color: #425466; line-height: 1.5; }
+.disclaimer { font-size: .84rem; color: #425466; line-height: 1.5; background: #F6F9FC; border: 1px solid #E3E8EE;
+              border-left: 4px solid #635BFF; border-radius: 10px; padding: .6rem .9rem; margin: -.4rem 0 .4rem; }
 
 /* Inputs: shaded cells, as in a financial model (colour chosen by the user); no +/- steppers */
 [data-testid="stNumberInput"] div[data-baseweb="input"], [data-testid="stNumberInput"] input,
@@ -68,6 +77,12 @@ header[data-testid="stHeader"] { background: transparent; }
 .st-key-panel { background: #FBFCFE; border: 1px solid #E3E8EE; border-radius: 16px; padding: 1rem 1.1rem; }
 .st-key-panel [data-testid="stMetric"] { padding: .6rem .8rem; }
 .st-key-panel [data-testid="stMetricValue"] { font-size: 1.45rem; }
+/* Narrow cards: smaller labels on one line, never cut off with "..." */
+.st-key-panel [data-testid="stMetric"] { padding: .6rem .55rem .6rem .7rem; }
+.st-key-panel [data-testid="stHorizontalBlock"] { gap: .6rem; }
+.st-key-panel [data-testid="stMetricLabel"], .st-key-panel [data-testid="stMetricLabel"] * {
+        white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important;
+        font-size: .76rem !important; }
 .panel-gap { margin-top: .5rem; }
 .fxbar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; background: #E3E8EE;
          margin: .1rem 0 .45rem; }
@@ -84,7 +99,8 @@ st.markdown(f"""
   <div><div class="hero-title">MAS 133 C2 Investment Risk Calculator</div>
   <div class="hero-sub">Capital charge for an insurance fund under MAS Notice 133 (Valuation and Capital Framework
   for Insurers). Start from the sample insurer below, then change the allocation, durations and liabilities.</div>
-  </div></div>""", unsafe_allow_html=True)
+  </div></div>
+<div class="disclaimer"><b>Illustrative only.</b> Results depend on the assumptions listed below.</div>""", unsafe_allow_html=True)
 
 # ---------- Inputs ----------
 if "v" not in st.session_state:
@@ -139,6 +155,7 @@ with left, st.container(key="grid"):
     row[2].markdown('<div class="grid-na">Shaded cells are inputs</div>', unsafe_allow_html=True)
 bond_dur, port_dur = weighted_durations(alloc, duration)
 bonds_pct = sum(alloc[k] for k, c in ASSET_CLASSES.items() if c["kind"] == "bond")
+listed_pct = sum(alloc[k] for k, c in ASSET_CLASSES.items() if c["kind"] == "equity" and not c.get("unlisted"))
 
 # Summary panel beside the grid: durations, mix, FX hedge inputs
 with right, st.container(key="panel"):
@@ -149,7 +166,10 @@ with right, st.container(key="panel"):
     s2.metric("Portfolio duration", f"{port_dur:.1f} yrs",
               help="Market-value weighted average effective duration of all assets; equity and property count "
                    "as zero.")
-    st.metric("Bonds / other", f"{bonds_pct:.0%} / {1 - bonds_pct:.0%}", "equity and property", delta_color="off")
+    st.metric("Bonds / listed equities / others",
+              f"{bonds_pct:.0%} / {listed_pct:.0%} / {1 - bonds_pct - listed_pct:.0%}",
+              help="Listed equities are developed- and emerging-market listed equity. Others are private equity "
+                   "and property.")
 
     # Currency mix: SGD % and FX forwards % are inputs; non-SGD and natural SGD follow from them
     st.markdown('<div class="grid-head panel-gap">Currency mix (% of fund)</div>', unsafe_allow_html=True)
@@ -263,6 +283,7 @@ asset and liability, and the Table 4E row closest to the duration rather than ea
 within its Table 2-I limit, so only the aggregate limits (private equity, property, FX) and the FX forward bank
 are checked.<br>• The only counterparty default exposure is the FX forwards (credit equivalent amount, Appendix 4H). Equity
 cyclical adjustments (CCA) are zero.<br>
-• This is an illustration of the MAS 133 method, not regulatory or actuarial advice. Interpretations should be
-confirmed by an actuary.
+• This is an illustration of the MAS 133 method, not regulatory or professional advice. Where the Notice leaves
+room for interpretation, the page follows one reading; check it against MAS Notice 133 and your insurer's own
+methodology.
 </div>""", unsafe_allow_html=True)

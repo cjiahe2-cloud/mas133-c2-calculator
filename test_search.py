@@ -1,7 +1,7 @@
 from docx import Document as WordDocument   # avoid clash with LangChain's Document
 from docx.shared import Pt, RGBColor
 
-from insurance_mas_rag import PROJECT_DIR, citation, load_env, open_vectorstore
+from insurance_mas_rag.rag import PROJECT_DIR, citation, load_env, open_vectorstore
 
 load_env()
 

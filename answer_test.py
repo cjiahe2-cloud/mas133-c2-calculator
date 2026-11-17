@@ -13,7 +13,7 @@ from docx import Document as WordDocument
 from docx.shared import Pt, RGBColor
 from pydantic import BaseModel, Field
 
-from insurance_mas_rag import (CHAT_MODEL, K, PROJECT_DIR, Context, build_agent, chat_model, format_chunks,
+from insurance_mas_rag.rag import (CHAT_MODEL, K, PROJECT_DIR, Context, build_agent, chat_model, format_chunks,
                                latest_turn, load_env, open_vectorstore)
 
 parser = argparse.ArgumentParser(description="Check chatbot answers and write a Word report.")
