@@ -8,6 +8,7 @@ instead of the repo's uv.lock with the chatbot's dependencies. The package isn't
 put on the path below.
 """
 import base64
+import html
 import copy
 import sys
 from pathlib import Path
@@ -84,16 +85,45 @@ header[data-testid="stHeader"] { background: transparent; }
         white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important;
         font-size: .76rem !important; }
 .panel-gap { margin-top: .5rem; }
+/* C2 metrics: labels and notes wrap rather than being cut off with "..." */
+.st-key-kpis [data-testid="stMetricLabel"], .st-key-kpis [data-testid="stMetricLabel"] *,
+.st-key-kpis [data-testid="stMetricDelta"], .st-key-kpis [data-testid="stMetricDelta"] * {
+        white-space: normal !important; overflow: visible !important; text-overflow: clip !important; }
+.st-key-kpis [data-testid="stMetricLabel"] p { font-size: .82rem !important; }
+.st-key-kpis [data-testid="stMetric"] { min-height: 7.9rem; }
 .fxbar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; background: #E3E8EE;
          margin: .1rem 0 .45rem; }
 .fxlegend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; font-size: .8rem; color: #425466; }
 .fxlegend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: .3rem; }
 .fxlegend b { color: #0A2540; }
 
+/* Compact tables shown on phones instead of the wide st.dataframe tables */
+[data-testid="stElementContainer"]:has(.phone-only) { display: none; }
+.mtable { width: 100%; border-collapse: collapse; font-size: .84rem; font-variant-numeric: tabular-nums;
+          border: 1px solid #E3E8EE; border-radius: 10px; overflow: hidden; margin-bottom: .6rem; }
+.mtable th { font-weight: 600; color: #697386; font-size: .74rem; text-align: right; padding: .45rem .5rem;
+             background: #FBFCFE; border-bottom: 1px solid #E3E8EE; }
+.mtable td { text-align: right; padding: .45rem .5rem; border-bottom: 1px solid #EEF1F5; color: #0A2540; }
+.mtable th:first-child, .mtable td:first-child { text-align: left; }
+.mtable tr.total td { background: #F1F4F9; font-weight: 700; border-bottom: none; }
+.lcard { border: 1px solid #E3E8EE; border-radius: 12px; padding: .65rem .8rem; margin-bottom: .5rem; background: #fff; }
+.lcard-top { display: flex; justify-content: space-between; align-items: baseline; gap: .6rem; }
+.lcard-title { font-weight: 600; color: #0A2540; font-size: .88rem; }
+.lcard-sub { color: #697386; font-size: .78rem; margin: .1rem 0 .4rem; }
+.lcard-nums { font-size: .82rem; color: #425466; font-variant-numeric: tabular-nums; }
+.lbar { height: 6px; border-radius: 999px; background: #E3E8EE; margin-top: .35rem; overflow: hidden; }
+.lbar span { display: block; height: 100%; background: #635BFF; }
+.pill { font-size: .74rem; font-weight: 700; padding: .1rem .5rem; border-radius: 999px; white-space: nowrap; }
+.pill.ok { background: #ECFDF3; color: #067647; }
+.pill.bad { background: #FEF3F2; color: #B42318; }
+
 /* Phones: Streamlit stacks every column below 640px (min-width ~100%). Keep the rows that read as tables or
    pairs side by side instead: the asset grid becomes a name line with its three inputs underneath. */
 @media (max-width: 640px) {
   .block-container { padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stElementContainer"]:has(.phone-only) { display: block; }
+  .st-key-bd_full, .st-key-lim_full { display: none; }
+  .st-key-main [data-testid="stHorizontalBlock"] { row-gap: 1.2rem; }
   .hero { padding: 1rem; gap: .8rem; align-items: flex-start; border-radius: 14px; }
   .hero img { width: 48px; height: 48px; padding: 4px; }
   .hero-title { font-size: 1.3rem; }
@@ -105,9 +135,6 @@ header[data-testid="stHeader"] { background: transparent; }
   .st-key-head [data-testid="stColumn"]:last-child { flex: 0 0 auto !important; width: auto !important; }
   .st-key-top [data-testid="stHorizontalBlock"], .st-key-kpis [data-testid="stHorizontalBlock"] { gap: .75rem; }
   .st-key-top [data-testid="stColumn"], .st-key-kpis [data-testid="stColumn"] { flex: 1 1 calc(50% - .75rem) !important; }
-  .st-key-kpis [data-testid="stMetricLabel"], .st-key-kpis [data-testid="stMetricLabel"] *,
-  .st-key-kpis [data-testid="stMetricDelta"], .st-key-kpis [data-testid="stMetricDelta"] * {
-        white-space: normal !important; overflow: visible !important; text-overflow: clip !important; }
   .st-key-kpis [data-testid="stMetricValue"] { font-size: 1.6rem; }
   .st-key-kpis [data-testid="stMetric"] { min-height: 8.4rem; }
   .st-key-grid [data-testid="stHorizontalBlock"] { gap: .1rem .6rem; }
@@ -146,7 +173,9 @@ if reset.button("Reset to sample", icon=":material/restart_alt:", width="stretch
 
 c1, c2, c3, c4 = st.container(key="top").columns(4, vertical_alignment="bottom")
 total_assets = c1.number_input("Total assets (SGD m)", 10.0, 1e6, S["total_assets"], 50.0, key=f"ta{v}")
-base_yield = c2.number_input("Base yield (%)", 0.0, 15.0, S["base_yield"] * 100, 0.25, key=f"y{v}") / 100
+base_yield = c2.number_input("Base yield at valuation date (%)", 0.0, 15.0, S["base_yield"] * 100, 0.25,
+                             key=f"y{v}", help="Use the SGS yield at your valuation date. The Table 4E interest "
+                                               "rate shocks are a % of this yield.") / 100
 liab_value = c3.number_input("Liabilities (SGD m)", 0.0, 1e6, S["liabilities"]["value"], 50.0, key=f"lv{v}")
 liab_dur = c4.number_input("Liability duration (years)", 0.0, 50.0, S["liabilities"]["duration"], 1.0,
                            key=f"ld{v}")
@@ -156,7 +185,7 @@ liab_dur = c4.number_input("Liability duration (years)", 0.0, 50.0, S["liabiliti
 GRID = [3.2, 1.7, 1.7, 1.6]
 FIXED_RATING = {"sgs": "AAA", "ust": "A or better", "unrated": "Unrated"}   # shown, not editable
 alloc, duration, ratings = {}, {}, {}
-left, right = st.columns([7, 4], gap="large")
+left, right = st.container(key="main").columns([7, 4], gap="large")
 with left, st.container(key="grid"):
     for col, text in zip(st.columns(GRID), ["Asset class", "Allocation (% of fund)", "Effective duration (years)",
                                             "Credit rating"]):
@@ -241,29 +270,49 @@ c2 = a.c2
 # ---------- Breakdown ----------
 st.markdown('<div class="step">2 · C2 risk charge breakdown</div>', unsafe_allow_html=True)
 m1, m2, m3, m4 = st.container(key="kpis").columns(4)
+benefit = c2.undiversified - c2.c2
 m1.metric("C2 investment risk requirement", f"{c2.c2:,.1f}m", f"{c2.c2 / total_assets:.1%} of assets",
-          delta_color="off")
-m2.metric("Sum of standalone charges", f"{c2.undiversified:,.1f}m")
-m3.metric("Diversification benefit", f"{c2.undiversified - c2.c2:,.1f}m",
-          f"{(c2.undiversified - c2.c2) / c2.undiversified:.0%} of standalone" if c2.undiversified else None,
-          delta_color="off")
-m4.metric("Interest rate scenario", "Rates down" if a.scenario == "down" else "Rates up",
-          f"Table {'4C-II' if a.scenario == 'down' else '4C-I'} correlations", delta_color="off")
+          delta_color="off", delta_arrow="off")
+m2.metric("Sum of standalone charges", f"{c2.undiversified:,.1f}m", f"{c2.undiversified / total_assets:.1%} of assets",
+          delta_color="off", delta_arrow="off")
+m3.metric("Diversification benefit", f"{benefit:,.1f}m", f"{benefit / total_assets:.1%} of assets",
+          delta_color="off", delta_arrow="off",
+          help=f"{benefit / c2.undiversified:.0%} of the sum of standalone charges." if c2.undiversified else None)
+m4.metric("Worse interest rate shock", "Rates down" if a.scenario == "down" else "Rates up",
+          f"Table {'4C-II' if a.scenario == 'down' else '4C-I'} correlations", delta_color="off",
+          delta_arrow="off",
+          help="MAS 133 tests both a rise and a fall in interest rates. The shock that gives the larger loss sets "
+               "the interest rate charge and the correlation table used to combine the modules into C2 "
+               "(Table 4C-I if rates up, 4C-II if rates down).")
 
 rows = [{"Risk module": label, "Standalone (SGD m)": a.modules[k], "% of assets": a.modules[k] / total_assets * 100,
          "Contribution to C2 (SGD m)": c2.contributions[k],
          "Share of C2": c2.contributions[k] / c2.c2 * 100 if c2.c2 else 0.0, "MAS 133": ref}
         for k, label, ref in MODULES]
-st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
-    "Standalone (SGD m)": st.column_config.NumberColumn(format="%.2f"),
+rows.append({"Risk module": "Total", "Standalone (SGD m)": c2.undiversified,
+             "% of assets": c2.undiversified / total_assets * 100, "Contribution to C2 (SGD m)": c2.c2,
+             "Share of C2": 100.0 if c2.c2 else 0.0, "MAS 133": "para 4.3.1.1"})
+breakdown = pd.DataFrame(rows).style.apply(
+    lambda r: ["background-color: #F1F4F9; color: #0A2540" if r["Risk module"] == "Total" else ""] * len(r), axis=1)
+st.container(key="bd_full").dataframe(breakdown, hide_index=True, width="stretch", column_config={
+    "Standalone (SGD m)": st.column_config.NumberColumn(
+        format="%.2f", help="Each module's charge on its own. The total is the sum, before diversification."),
     "% of assets": st.column_config.NumberColumn(format="%.2f%%"),
     "Contribution to C2 (SGD m)": st.column_config.NumberColumn(
         format="%.2f", help="Euler allocation: each module's share of the diversified C2. Adds up to C2."),
     "Share of C2": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
-st.markdown(f'<div class="note">Modules are combined with the Table '
-            f'{"4C-II (downward)" if a.scenario == "down" else "4C-I (upward)"} correlation matrix, chosen by the '
-            f'interest rate scenario that gives the larger loss. Market risk {c2.market:,.2f}m is then combined with '
-            f'counterparty default at correlation 0.5 (para 4.3.1.1).</div>', unsafe_allow_html=True)
+mrows = "".join(
+    f'<tr{" class=total" if r["Risk module"] == "Total" else ""}><td>{html.escape(r["Risk module"])}</td>'
+    f'<td>{r["Standalone (SGD m)"]:,.2f}</td><td>{r["Contribution to C2 (SGD m)"]:,.2f}</td>'
+    f'<td>{r["Share of C2"]:.0f}%</td></tr>' for r in rows)
+st.markdown(f'<div class="phone-only"><table class="mtable"><tr><th>Risk module</th><th>Standalone</th>'
+            f'<th>Contribution</th><th>Share</th></tr>{mrows}</table></div>', unsafe_allow_html=True)
+table = "4C-II (rates down)" if a.scenario == "down" else "4C-I (rates up)"
+st.markdown(f'<div class="note">How C2 is built: (1) the five market modules (equity, interest rate, credit spread, '
+            f'property, foreign currency) are combined with the Table {table} correlations, picked by the worse '
+            f'interest rate shock, into a market risk charge of {c2.market:,.2f}m (para 4.3.1.4). (2) Market risk is '
+            f'then combined with counterparty default ({a.modules["default"]:,.2f}m) at correlation 0.5, giving C2 '
+            f'of {c2.c2:,.2f}m (para 4.3.1.1).</div>', unsafe_allow_html=True)
 
 with st.expander("Show the working for each module"):
     for k, label, ref in MODULES:
@@ -283,7 +332,7 @@ else:
     st.markdown('<div class="status ok">✓ All concentration limits are met. No adjustment to financial '
                 'resources.</div>', unsafe_allow_html=True)
 
-st.dataframe(pd.DataFrame([{
+st.container(key="lim_full").dataframe(pd.DataFrame([{
     "Item": r.item, "Limit applies to": r.covers[0].upper() + r.covers[1:], "Checked against": r.holding,
     "Exposure (SGD m)": r.exposure, "Limit (SGD m)": r.limit,
     "Limit used": min(r.exposure / r.limit * 100, 100) if r.limit else 0.0,
@@ -293,6 +342,17 @@ st.dataframe(pd.DataFrame([{
         "Limit (SGD m)": st.column_config.NumberColumn(format="%.2f"),
         "Limit used": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
         "Adjustment (SGD m)": st.column_config.NumberColumn(format="%.2f")})
+cards = []
+for r in a.limits:
+    used = min(r.exposure / r.limit, 1) if r.limit else 0.0
+    adj = f" · adjustment {r.adjustment:,.2f}m" if r.breach else ""
+    cards.append(
+        f'<div class="lcard"><div class="lcard-top"><span class="lcard-title">{html.escape(r.item)} '
+        f'{html.escape(r.covers[0].upper() + r.covers[1:])}</span><span class="pill {"bad" if r.breach else "ok"}">'
+        f'{"✕ Breach" if r.breach else "✓ Within"}</span></div><div class="lcard-sub">{html.escape(r.holding)}</div>'
+        f'<div class="lcard-nums">{r.exposure:,.2f}m of {r.limit:,.2f}m limit · {used:.0%} used{adj}</div>'
+        f'<div class="lbar"><span style="width:{used:.0%}"></span></div></div>')
+st.markdown(f'<div class="phone-only">{"".join(cards)}</div>', unsafe_allow_html=True)
 if breaches:
     st.markdown('<div class="note">Para 4.1.8 also excludes the assets behind the adjustment from the C2 '
                 'calculation. Apart from the FX module, this page does not recalculate C2 for that.</div>',
