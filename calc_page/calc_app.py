@@ -89,6 +89,36 @@ header[data-testid="stHeader"] { background: transparent; }
 .fxlegend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; font-size: .8rem; color: #425466; }
 .fxlegend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: .3rem; }
 .fxlegend b { color: #0A2540; }
+
+/* Phones: Streamlit stacks every column below 640px (min-width ~100%). Keep the rows that read as tables or
+   pairs side by side instead: the asset grid becomes a name line with its three inputs underneath. */
+@media (max-width: 640px) {
+  .block-container { padding-left: 1rem; padding-right: 1rem; }
+  .hero { padding: 1rem; gap: .8rem; align-items: flex-start; border-radius: 14px; }
+  .hero img { width: 48px; height: 48px; padding: 4px; }
+  .hero-title { font-size: 1.3rem; }
+  .hero-sub { font-size: .84rem; line-height: 1.45; }
+  .st-key-head [data-testid="stColumn"], .st-key-top [data-testid="stColumn"], .st-key-grid [data-testid="stColumn"],
+  .st-key-panel [data-testid="stColumn"], .st-key-kpis [data-testid="stColumn"] { min-width: 0 !important; }
+  .st-key-head [data-testid="stHorizontalBlock"], .st-key-panel [data-testid="stHorizontalBlock"] { flex-wrap: nowrap; }
+  .st-key-head [data-testid="stColumn"]:first-child { flex: 1 1 auto !important; }
+  .st-key-head [data-testid="stColumn"]:last-child { flex: 0 0 auto !important; width: auto !important; }
+  .st-key-top [data-testid="stHorizontalBlock"], .st-key-kpis [data-testid="stHorizontalBlock"] { gap: .75rem; }
+  .st-key-top [data-testid="stColumn"], .st-key-kpis [data-testid="stColumn"] { flex: 1 1 calc(50% - .75rem) !important; }
+  .st-key-kpis [data-testid="stMetricLabel"], .st-key-kpis [data-testid="stMetricLabel"] *,
+  .st-key-kpis [data-testid="stMetricDelta"], .st-key-kpis [data-testid="stMetricDelta"] * {
+        white-space: normal !important; overflow: visible !important; text-overflow: clip !important; }
+  .st-key-kpis [data-testid="stMetricValue"] { font-size: 1.6rem; }
+  .st-key-kpis [data-testid="stMetric"] { min-height: 8.4rem; }
+  .st-key-grid [data-testid="stHorizontalBlock"] { gap: .1rem .6rem; }
+  .st-key-grid [data-testid="stColumn"] { flex: 1 1 0 !important; }
+  .st-key-grid [data-testid="stColumn"]:first-child { flex: 1 1 100% !important; }
+  .st-key-grid [data-testid="stColumn"]:first-child:has(.grid-head) { display: none; }
+  .st-key-grid .grid-label { margin-top: .55rem; font-weight: 600; }
+  .st-key-grid [data-testid="stColumn"] [data-testid="stMarkdownContainer"],
+  .st-key-grid [data-testid="stColumn"] [data-testid="stMarkdown"] { margin-bottom: 0 !important; }
+  .st-key-grid .grid-head { font-size: .72rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -108,13 +138,13 @@ if "v" not in st.session_state:
 v = st.session_state.v
 S = SAMPLE_PORTFOLIO
 
-head, reset = st.columns([5, 1], vertical_alignment="bottom")
+head, reset = st.container(key="head").columns([5, 1], vertical_alignment="bottom")
 head.markdown('<div class="step">1 · Portfolio</div>', unsafe_allow_html=True)
 if reset.button("Reset to sample", icon=":material/restart_alt:", width="stretch"):
     st.session_state.v += 1
     st.rerun()
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4 = st.container(key="top").columns(4, vertical_alignment="bottom")
 total_assets = c1.number_input("Total assets (SGD m)", 10.0, 1e6, S["total_assets"], 50.0, key=f"ta{v}")
 base_yield = c2.number_input("Base yield (%)", 0.0, 15.0, S["base_yield"] * 100, 0.25, key=f"y{v}") / 100
 liab_value = c3.number_input("Liabilities (SGD m)", 0.0, 1e6, S["liabilities"]["value"], 50.0, key=f"lv{v}")
@@ -210,7 +240,7 @@ c2 = a.c2
 
 # ---------- Breakdown ----------
 st.markdown('<div class="step">2 · C2 risk charge breakdown</div>', unsafe_allow_html=True)
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3, m4 = st.container(key="kpis").columns(4)
 m1.metric("C2 investment risk requirement", f"{c2.c2:,.1f}m", f"{c2.c2 / total_assets:.1%} of assets",
           delta_color="off")
 m2.metric("Sum of standalone charges", f"{c2.undiversified:,.1f}m")
